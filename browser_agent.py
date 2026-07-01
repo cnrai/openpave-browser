@@ -242,6 +242,7 @@ def cmd_find(args):
     if "x1" in coords:
         result["bbox"] = {"x1": coords["x1"], "y1": coords["y1"],
                           "x2": coords["x2"], "y2": coords["y2"]}
+    post_ocr(args, result)
     emit(result)
 
 
@@ -273,8 +274,10 @@ def cmd_eval(args):
 def cmd_url(args):
     """Get current URL and title."""
     r = executor.get_url()
-    emit({"action": "url", "url": r.get("url", ""),
-          "title": r.get("title", "")})
+    result = {"action": "url", "url": r.get("url", ""),
+              "title": r.get("title", "")}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_wait(args):
@@ -331,9 +334,12 @@ def cmd_check(args):
 
 
 def add_ocr_args(p):
-    """Add --ocr, --ocr-wait, --ocr-timeout to a subparser."""
-    p.add_argument("--ocr", action="store_true",
-                   help="Auto-screenshot after action (for OCR)")
+    """Add OCR args to a subparser. OCR is ON by default; use --no-ocr to disable."""
+    p.add_argument("--ocr", dest="ocr", action="store_true",
+                   help="Enable OCR (default: on)")
+    p.add_argument("--no-ocr", dest="ocr", action="store_false",
+                   help="Disable OCR")
+    p.set_defaults(ocr=True)
     p.add_argument("--ocr-wait", type=float, default=1.5,
                    help="Network idle settle time in seconds (default 1.5)")
     p.add_argument("--ocr-timeout", type=float, default=15.0,
@@ -351,8 +357,11 @@ def main():
     p = sub.add_parser("screenshot", help="Capture page screenshot")
     p.add_argument("--output", default=None)
     p.add_argument("--full", action="store_true", help="Full page capture")
-    p.add_argument("--ocr", action="store_true",
-                   help="Run OCR on screenshot and include text in output")
+    p.add_argument("--ocr", dest="ocr", action="store_true",
+                   help="Run OCR on screenshot (default: on)")
+    p.add_argument("--no-ocr", dest="ocr", action="store_false",
+                   help="Skip OCR")
+    p.set_defaults(ocr=True)
     p.set_defaults(func=cmd_screenshot)
 
     # dom
@@ -401,6 +410,7 @@ def main():
     # find
     p = sub.add_parser("find", help="Locate element via LocateAnything")
     p.add_argument("description", help="Natural-language description")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_find)
 
     # key
@@ -424,6 +434,7 @@ def main():
 
     # url
     p = sub.add_parser("url", help="Get current URL and title")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_url)
 
     # wait

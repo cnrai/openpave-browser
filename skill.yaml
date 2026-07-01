@@ -2,12 +2,15 @@
 # Vision-driven browser automation via Puppeteer + LocateAnything-3B
 
 name: browser-use
-version: 1.0.0
+version: 1.1.0
 description: >
   Control a web browser through Puppeteer (precise selector-based control)
   + LocateAnything-3B (visual grounding fallback). Navigate pages, fill forms,
   click elements, type text, extract DOM, take screenshots, and execute
   JavaScript — all from PAVE agent commands.
+  
+  OCR is ON by default on all action commands — each response includes the
+  extracted page text. Use --no-ocr to disable for faster responses.
 
 author:
   name: cnrai
@@ -29,13 +32,16 @@ commands:
     options:
       - --full
       - --output <path>
+      - --no-ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: dom
     description: Extract interactive DOM elements with CSS selectors
     args: []
     options:
       - --text-only
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -45,7 +51,7 @@ commands:
       - <url>
     options:
       - --wait <seconds>
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -55,7 +61,7 @@ commands:
       - <selector>
       - <text>
     options:
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -64,7 +70,7 @@ commands:
     args:
       - <selector>
     options:
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -74,7 +80,7 @@ commands:
       - <x>
       - <y>
     options:
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -85,7 +91,7 @@ commands:
       - <y>
       - <text>
     options:
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -93,13 +99,17 @@ commands:
     description: Locate element via LocateAnything visual grounding
     args:
       - <description>
+    options:
+      - --no-ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: key
     description: Press key combo
     args:
       - <combo>
     options:
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -109,7 +119,7 @@ commands:
       - <up|down>
     options:
       - --amount <steps>
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
@@ -118,13 +128,17 @@ commands:
     args:
       - <code>
     options:
-      - --ocr
+      - --no-ocr
       - --ocr-wait <seconds>
       - --ocr-timeout <seconds>
 
   - name: url
     description: Get current page URL and title
     args: []
+    options:
+      - --no-ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: focus
     description: Focus Chrome window
