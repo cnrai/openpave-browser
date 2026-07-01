@@ -10,25 +10,53 @@ const fs = require("fs");
 
 const SOCKET_PATH = "/tmp/puppeteer-bridge.sock";
 const CDP_URL = "http://127.0.0.1:9222";
+const OP_TIMEOUT = 20000; // 20s max per operation
 
 let browser = null;
 let page = null;
+
+// ── Timeout wrapper ───────────────────────────────────────────────────────
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise(function(_, reject) {
+      setTimeout(function() {
+        reject(new Error(label + " timed out after " + ms + "ms"));
+      }, ms);
+    }),
+  ]);
+}
+
+// ── Connection management ─────────────────────────────────────────────────
 
 async function connect() {
   if (browser && browser.connected) return;
   console.error("[bridge] Connecting to %s...", CDP_URL);
   browser = await puppeteer.connect({ browserURL: CDP_URL, defaultViewport: null });
-  const pages = await browser.pages();
+  var pages = await browser.pages();
   page = pages[pages.length - 1] || (await browser.newPage());
-  browser.on("disconnected", () => { browser = null; page = null; });
+  browser.on("disconnected", function() {
+    console.error("[bridge] Disconnected from browser");
+    browser = null;
+    page = null;
+  });
   console.error("[bridge] Connected. Tab: %s", await page.title());
 }
 
 async function getPage() {
-  if (!browser || !browser.connected) await connect();
-  if (!page) {
-    const pages = await browser.pages();
-    page = pages[pages.length - 1];
+  if (!browser || !browser.connected) {
+    await connect();
+    return page;
+  }
+  // Health check: verify the connection is actually alive
+  try {
+    await withTimeout(page.evaluate("1"), 3000, "health check");
+  } catch (e) {
+    console.error("[bridge] Connection stale, reconnecting: %s", e.message);
+    browser = null;
+    page = null;
+    await connect();
   }
   return page;
 }
@@ -37,41 +65,71 @@ async function getPage() {
 
 const handlers = {
   async ping(cmd) {
-    return { ok: true, pong: true, connected: !!(browser && browser.connected) };
+    if (!browser || !browser.connected) return { ok: false, connected: false };
+    try {
+      await withTimeout(page.evaluate("1"), 2000, "ping");
+      return { ok: true, pong: true, connected: true };
+    } catch (e) {
+      return { ok: false, connected: false, error: e.message };
+    }
   },
 
   async url(cmd) {
     const p = await getPage();
-    return { ok: true, url: p.url(), title: await p.title() };
+    return { ok: true, url: p.url(), title: await withTimeout(p.title(), OP_TIMEOUT, "title") };
   },
 
   async navigate(cmd) {
     const p = await getPage();
-    await p.goto(cmd.url, { waitUntil: "domcontentloaded", timeout: cmd.timeout || 15000 });
+    await withTimeout(
+      p.goto(cmd.url, { waitUntil: "domcontentloaded", timeout: cmd.timeout || 15000 }),
+      OP_TIMEOUT, "navigate"
+    );
     return { ok: true, url: p.url(), title: await p.title() };
   },
 
   async type(cmd) {
     const p = await getPage();
-    await p.click(cmd.selector, { clickCount: 3 });
-    await p.keyboard.press("Backspace");
-    await p.type(cmd.selector, cmd.text, { delay: 10 });
+    // Focus + select all existing text via JS (avoids Puppeteer's click() which can hang)
+    var exists = await withTimeout(p.evaluate(function(sel) {
+      var el = document.querySelector(sel);
+      if (el) {
+        el.focus();
+        if (el.select) el.select();          // textarea/input: select all
+        else if (el.value !== undefined) el.value = ""; // input: clear
+        return true;
+      }
+      return false;
+    }, cmd.selector), OP_TIMEOUT, "type:focus");
+    if (!exists) return { ok: false, error: "element not found: " + cmd.selector };
+    // Delete any selected text, then type
+    await withTimeout(p.keyboard.press("Backspace"), 3000, "type:clear");
+    await withTimeout(p.keyboard.type(cmd.text, { delay: 10 }), OP_TIMEOUT, "type:input");
     return { ok: true, selector: cmd.selector, text: cmd.text };
   },
 
   async type_text(cmd) {
     const p = await getPage();
-    await p.keyboard.type(cmd.text, { delay: 10 });
+    await withTimeout(p.keyboard.type(cmd.text, { delay: 10 }), OP_TIMEOUT, "type_text");
     return { ok: true, text: cmd.text };
   },
 
   async click(cmd) {
     const p = await getPage();
     if (cmd.selector) {
-      await p.click(cmd.selector);
+      // Use evaluate-based click (avoids Puppeteer page.click() hang
+      // on elements with overlays or complex event handling)
+      var ok = await withTimeout(p.evaluate(function(sel) {
+        var el = document.querySelector(sel);
+        if (!el) return false;
+        el.scrollIntoView({ block: "center" });
+        el.click();
+        return true;
+      }, cmd.selector), OP_TIMEOUT, "click:selector");
+      if (!ok) return { ok: false, error: "element not found: " + cmd.selector };
       return { ok: true, selector: cmd.selector };
     } else if (cmd.x !== undefined) {
-      await p.mouse.click(cmd.x, cmd.y);
+      await withTimeout(p.mouse.click(cmd.x, cmd.y), OP_TIMEOUT, "click:coords");
       return { ok: true, x: cmd.x, y: cmd.y };
     }
     return { ok: false, error: "need selector or x,y" };
@@ -104,20 +162,22 @@ const handlers = {
   async scroll(cmd) {
     const p = await getPage();
     var dy = cmd.direction === "up" ? -(cmd.amount || 500) : (cmd.amount || 500);
-    await p.mouse.wheel({ deltaY: dy });
+    await withTimeout(p.mouse.wheel({ deltaY: dy }), OP_TIMEOUT, "scroll");
+    // Small delay for scroll to settle
+    await new Promise(function(r) { setTimeout(r, 300); });
     return { ok: true, direction: cmd.direction, amount: cmd.amount };
   },
 
   async screenshot(cmd) {
     const p = await getPage();
     var outPath = cmd.output || "/tmp/browser-use-screenshot.png";
-    await p.screenshot({ path: outPath, fullPage: cmd.fullPage || false });
+    await withTimeout(p.screenshot({ path: outPath, fullPage: cmd.fullPage || false }), OP_TIMEOUT, "screenshot");
     return { ok: true, path: outPath };
   },
 
   async dom(cmd) {
     const p = await getPage();
-    var data = await p.evaluate(function() {
+    var data = await withTimeout(p.evaluate(function() {
       function buildSelector(el) {
         if (el.id) return "#" + el.id;
         var name = el.getAttribute("name");
@@ -172,13 +232,13 @@ const handlers = {
         viewportW: window.innerWidth, viewportH: window.innerHeight,
         elements: results.slice(0, 80),
       };
-    });
+    }), OP_TIMEOUT, "dom");
     return Object.assign({ ok: true }, data);
   },
 
   async eval(cmd) {
     const p = await getPage();
-    var result = await p.evaluate(cmd.code);
+    var result = await withTimeout(p.evaluate(cmd.code), OP_TIMEOUT, "eval");
     return { ok: true, result: JSON.stringify(result) };
   },
 
@@ -195,7 +255,8 @@ async function handleRequest(data) {
     var cmd = JSON.parse(data.toString().trim());
     var handler = handlers[cmd.action];
     if (!handler) return { ok: false, error: "unknown action: " + cmd.action };
-    return await handler(cmd);
+    // Global timeout on the entire handler
+    return await withTimeout(handler(cmd), OP_TIMEOUT + 5000, cmd.action);
   } catch (err) {
     console.error("[bridge] Error: %s", err.message);
     return { ok: false, error: err.message };

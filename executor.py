@@ -12,11 +12,15 @@ The Puppeteer bridge connects to Chrome via CDP (port 9222) and handles:
 """
 
 import json
+import os
 import socket
+import subprocess
 import sys
 import time
 from typing import Optional, Tuple
 from PIL import Image
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── Puppeteer bridge ───────────────────────────────────────────────────────
 
@@ -25,8 +29,107 @@ DAEMON_SOCKET = "/tmp/browser-use-daemon.sock"
 TIMEOUT = 30
 
 
+def _ensure_bridge():
+    """Ensure the Puppeteer bridge daemon is running and responsive.
+
+    - If socket doesn't exist: start the bridge
+    - If socket exists but ping fails: kill stale bridge, restart
+    - If responsive: do nothing
+    """
+    ready_file = "/tmp/puppeteer-bridge-ready"
+
+    def _is_responsive():
+        if not os.path.exists(PUPPETEER_SOCKET):
+            return False
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(3)
+            s.connect(PUPPETEER_SOCKET)
+            s.sendall(b'{"action":"ping"}\n')
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\n" in data:
+                    break
+            s.close()
+            r = json.loads(data.decode().strip())
+            return r.get("ok") and r.get("connected")
+        except Exception:
+            return False
+
+    if _is_responsive():
+        return
+
+    # Kill stale bridge if any
+    if os.path.exists(PUPPETEER_SOCKET):
+        try:
+            os.unlink(PUPPETEER_SOCKET)
+        except Exception:
+            pass
+    if os.path.exists(ready_file):
+        try:
+            os.unlink(ready_file)
+        except Exception:
+            pass
+
+    bridge_js = os.path.join(SCRIPT_DIR, "node", "puppeteer_bridge.js")
+    if not os.path.exists(bridge_js):
+        bridge_js = os.path.join(SCRIPT_DIR, "puppeteer_bridge.js")
+    if not os.path.exists(bridge_js):
+        return  # Can't start bridge
+
+    # Set NODE_PATH to find puppeteer-core
+    node_modules = os.path.join(SCRIPT_DIR, "node_modules")
+    env = dict(os.environ)
+    env["NODE_PATH"] = node_modules + ":" + env.get("NODE_PATH", "")
+
+    # Find node binary (not always on PATH on remote hosts)
+    node_bin = None
+    for candidate in [
+        env.get("NODE_BIN", ""),
+        "node",
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        os.path.expanduser("~/tools/node/bin/node"),
+        os.path.expanduser("~/.nvm/current/bin/node"),
+    ]:
+        if candidate and os.path.exists(candidate):
+            node_bin = candidate
+            break
+    if not node_bin:
+        # Try which/node via shell
+        try:
+            import shutil
+            node_bin = shutil.which("node") or ""
+        except Exception:
+            pass
+    if not node_bin:
+        return  # Can't start bridge
+
+    subprocess.Popen(
+        [node_bin, bridge_js],
+        stdout=subprocess.DEVNULL,
+        stderr=sys.stderr,
+        env=env,
+        cwd=SCRIPT_DIR,
+    )
+
+    # Wait for bridge to be ready (up to 15s)
+    for _ in range(30):
+        if os.path.exists(ready_file) and _is_responsive():
+            return
+        time.sleep(0.5)
+
+
 def _send_puppeteer(cmd: dict) -> dict:
-    """Send command to Puppeteer bridge (newline-delimited JSON)."""
+    """Send command to Puppeteer bridge (newline-delimited JSON).
+
+    Auto-starts the bridge daemon if it's not running or unresponsive.
+    """
+    _ensure_bridge()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(TIMEOUT)
     s.connect(PUPPETEER_SOCKET)
