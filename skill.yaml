@@ -19,7 +19,7 @@ repository: cnrai/openpave-browser
 
 # Execution pattern: host (needs OS-level access for Chrome + pyautogui)
 pattern: host
-entrypoint: browser-use.sh
+entrypoint: index.js
 
 # Available commands
 commands:
