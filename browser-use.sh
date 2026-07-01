@@ -60,12 +60,28 @@ if [ -n "$REMOTE_HOST" ]; then
     exit 0
   fi
 
+  # Check if --ocr flag is present (auto-screenshot after action)
+  HAS_OCR=false
+  for arg in "$@"; do
+    [ "$arg" = "--ocr" ] && HAS_OCR=true
+  done
+
   # All other commands: forward directly (properly quoted)
   QUOTED_ARGS=""
   for arg in "$@"; do
     QUOTED_ARGS="$QUOTED_ARGS $(printf '%q' "$arg")"
   done
-  exec $SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}"
+
+  if [ "$HAS_OCR" = true ]; then
+    # Run command, then SCP screenshot back, patch path in JSON
+    REMOTE_SCR="/tmp/browser-use-screenshot.png"
+    OUTPUT=$($SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}" 2>/dev/null)
+    LOCAL_SCR="/tmp/browser-use-screenshot.png"
+    $SCP_CMD "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_SCR}" "${LOCAL_SCR}" 2>/dev/null
+    echo "$OUTPUT" | sed "s|${REMOTE_SCR}|${LOCAL_SCR}|g"
+  else
+    exec $SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}"
+  fi
 fi
 
 # ── Local mode ─────────────────────────────────────────────────────────────

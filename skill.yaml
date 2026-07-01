@@ -35,6 +35,9 @@ commands:
     args: []
     options:
       - --text-only
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: navigate
     description: Navigate to URL
@@ -42,23 +45,38 @@ commands:
       - <url>
     options:
       - --wait <seconds>
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: dom_type
     description: Type text into element by CSS selector (Puppeteer)
     args:
       - <selector>
       - <text>
+    options:
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: dom_click
     description: Click element by CSS selector (Puppeteer)
     args:
       - <selector>
+    options:
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: click
     description: Click at screen coordinates (pyautogui)
     args:
       - <x>
       - <y>
+    options:
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: type
     description: Type at screen coordinates (pyautogui fallback)
@@ -66,6 +84,10 @@ commands:
       - <x>
       - <y>
       - <text>
+    options:
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: find
     description: Locate element via LocateAnything visual grounding
@@ -76,6 +98,10 @@ commands:
     description: Press key combo
     args:
       - <combo>
+    options:
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: scroll
     description: Scroll page up or down
@@ -83,11 +109,18 @@ commands:
       - <up|down>
     options:
       - --amount <steps>
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: eval
     description: Execute JavaScript in page
     args:
       - <code>
+    options:
+      - --ocr
+      - --ocr-wait <seconds>
+      - --ocr-timeout <seconds>
 
   - name: url
     description: Get current page URL and title

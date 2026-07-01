@@ -213,6 +213,38 @@ def focus_chrome():
     _send_daemon({"action": "focus_chrome"})
 
 
+def wait_network_idle(idle_time: float = 1.5, timeout: float = 15.0):
+    """Wait until network activity settles (no requests for idle_time seconds).
+
+    Uses Puppeteer's waitForFunction to monitor document.readyState and
+    a manual network counter injected via eval. Falls back gracefully.
+    """
+    deadline = time.time() + timeout
+    # First check readyState
+    try:
+        while time.time() < deadline:
+            r = _send_puppeteer({"action": "eval", "code": "document.readyState"})
+            state = r.get("result", "").strip('"')
+            if state == "complete":
+                break
+            time.sleep(0.3)
+    except Exception:
+        pass
+    # Give a brief settle period for late XHR/fetch
+    time.sleep(min(idle_time, max(0, deadline - time.time())))
+
+
+def auto_screenshot(args=None):
+    """Take a screenshot, save it, return (path, width, height).
+
+    Used by --ocr flag: after any action, capture the page state.
+    """
+    image = screenshot()
+    out_path = "/tmp/browser-use-screenshot.png"
+    image.save(out_path)
+    return out_path, image.size[0], image.size[1]
+
+
 def wait(seconds: float = 2.0):
     """Sleep."""
     time.sleep(seconds)

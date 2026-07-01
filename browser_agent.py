@@ -42,6 +42,22 @@ def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False))
 
 
+def post_ocr(args, result: dict):
+    """If --ocr is set, wait for network idle + screenshot, add to result."""
+    if not getattr(args, "ocr", False):
+        return
+    try:
+        executor.wait_network_idle(
+            idle_time=getattr(args, "ocr_wait", 1.5),
+            timeout=getattr(args, "ocr_timeout", 15.0),
+        )
+        path, w, h = executor.auto_screenshot()
+        result["screenshot"] = path
+        result["screenshot_size"] = {"width": w, "height": h}
+    except Exception as e:
+        result["screenshot_error"] = str(e)
+
+
 # ── Locator singleton ─────────────────────────────────────────────────────
 
 _LOCATOR = None
@@ -101,18 +117,20 @@ def cmd_dom(args):
             parts.append("sel=%s" % el.get("selector", "?")[:60])
             parts.append("(%d,%d)" % (el["cx"], el["cy"]))
             lines.append(" ".join(parts))
-        emit({"action": "dom", "format": "text", "lines": lines,
+        result = {"action": "dom", "format": "text", "lines": lines,
               "page": {"title": data.get("title"),
                        "url": data.get("url")},
-              "count": len(elements)})
+              "count": len(elements)}
     else:
-        emit({"action": "dom", "page": {
+        result = {"action": "dom", "page": {
                 "title": data.get("title"),
                 "url": data.get("url"),
                 "viewport": "%sx%s" % (
                     data.get("viewportW"), data.get("viewportH"))},
               "elements": elements,
-              "count": len(elements)})
+              "count": len(elements)}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_navigate(args):
@@ -121,32 +139,42 @@ def cmd_navigate(args):
     if not url.startswith("http"):
         url = "https://" + url
     r = executor.navigate(url, timeout=int(args.wait * 1000))
-    emit({"action": "navigate", "url": r.get("url", url),
-          "title": r.get("title", "")})
+    result = {"action": "navigate", "url": r.get("url", url),
+          "title": r.get("title", "")}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_dom_type(args):
     """Type text into element by CSS selector."""
     executor.type_selector(args.selector, args.text)
-    emit({"action": "dom_type", "selector": args.selector, "text": args.text})
+    result = {"action": "dom_type", "selector": args.selector, "text": args.text}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_dom_click(args):
     """Click element by CSS selector."""
     executor.click_selector(args.selector)
-    emit({"action": "dom_click", "selector": args.selector})
+    result = {"action": "dom_click", "selector": args.selector}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_click(args):
     """Click at screen coordinates."""
     executor.click(args.x, args.y)
-    emit({"action": "click", "x": args.x, "y": args.y})
+    result = {"action": "click", "x": args.x, "y": args.y}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_type(args):
     """Type at screen coordinates (fallback when no selector)."""
     executor.type_at(args.x, args.y, args.text)
-    emit({"action": "type", "x": args.x, "y": args.y, "text": args.text})
+    result = {"action": "type", "x": args.x, "y": args.y, "text": args.text}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_find(args):
@@ -176,20 +204,26 @@ def cmd_find(args):
 def cmd_key(args):
     """Press key combo."""
     executor.press_key(args.combo)
-    emit({"action": "key", "combo": args.combo})
+    result = {"action": "key", "combo": args.combo}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_scroll(args):
     """Scroll up or down."""
     executor.scroll(args.direction, args.amount * 300)
-    emit({"action": "scroll", "direction": args.direction,
-          "amount": args.amount})
+    result = {"action": "scroll", "direction": args.direction,
+          "amount": args.amount}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_eval(args):
     """Execute JavaScript in page."""
-    result = executor.eval_js(args.code)
-    emit({"action": "eval", "result": result})
+    result_val = executor.eval_js(args.code)
+    result = {"action": "eval", "result": result_val}
+    post_ocr(args, result)
+    emit(result)
 
 
 def cmd_url(args):
@@ -252,6 +286,16 @@ def cmd_check(args):
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+def add_ocr_args(p):
+    """Add --ocr, --ocr-wait, --ocr-timeout to a subparser."""
+    p.add_argument("--ocr", action="store_true",
+                   help="Auto-screenshot after action (for OCR)")
+    p.add_argument("--ocr-wait", type=float, default=1.5,
+                   help="Network idle settle time in seconds (default 1.5)")
+    p.add_argument("--ocr-timeout", type=float, default=15.0,
+                   help="Max wait for network idle in seconds (default 15)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Vision-driven browser control (Puppeteer + LocateAnything)",
@@ -269,6 +313,7 @@ def main():
     p = sub.add_parser("dom", help="Extract interactive DOM elements")
     p.add_argument("--text-only", action="store_true",
                    help="Simplified text output with selectors")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_dom)
 
     # navigate
@@ -276,23 +321,27 @@ def main():
     p.add_argument("url", help="URL to navigate to")
     p.add_argument("--wait", type=float, default=5.0,
                    help="Timeout in seconds (default 5)")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_navigate)
 
     # dom_type
     p = sub.add_parser("dom_type", help="Type text into element by CSS selector")
     p.add_argument("selector", help="CSS selector (e.g. textarea[name=q])")
     p.add_argument("text", help="Text to type")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_dom_type)
 
     # dom_click
     p = sub.add_parser("dom_click", help="Click element by CSS selector")
     p.add_argument("selector", help="CSS selector")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_dom_click)
 
     # click
     p = sub.add_parser("click", help="Click at screen coordinates")
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
+    add_ocr_args(p)
     p.set_defaults(func=cmd_click)
 
     # type
@@ -300,6 +349,7 @@ def main():
     p.add_argument("x", type=int)
     p.add_argument("y", type=int)
     p.add_argument("text", help="Text to type")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_type)
 
     # find
@@ -310,17 +360,20 @@ def main():
     # key
     p = sub.add_parser("key", help="Press key combo")
     p.add_argument("combo", help='e.g. "enter", "cmd+t", "escape"')
+    add_ocr_args(p)
     p.set_defaults(func=cmd_key)
 
     # scroll
     p = sub.add_parser("scroll", help="Scroll page")
     p.add_argument("direction", choices=["up", "down"])
     p.add_argument("--amount", type=int, default=3, help="Scroll steps (default 3)")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_scroll)
 
     # eval
     p = sub.add_parser("eval", help="Execute JavaScript in page")
     p.add_argument("code", help="JavaScript code")
+    add_ocr_args(p)
     p.set_defaults(func=cmd_eval)
 
     # url
