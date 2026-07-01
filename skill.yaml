@@ -1,0 +1,139 @@
+# OpenPAVE Browser Skill
+# Vision-driven browser automation via Puppeteer + LocateAnything-3B
+
+name: browser-use
+version: 1.0.0
+description: >
+  Control a web browser through Puppeteer (precise selector-based control)
+  + LocateAnything-3B (visual grounding fallback). Navigate pages, fill forms,
+  click elements, type text, extract DOM, take screenshots, and execute
+  JavaScript — all from PAVE agent commands.
+
+author:
+  name: cnrai
+  url: https://github.com/cnrai
+
+license: MIT
+homepage: https://github.com/cnrai/openpave-browser
+repository: cnrai/openpave-browser
+
+# Execution pattern: host (needs OS-level access for Chrome + pyautogui)
+pattern: host
+entrypoint: browser-use.sh
+
+# Available commands
+commands:
+  - name: screenshot
+    description: Capture page screenshot
+    args: []
+    options:
+      - --full
+      - --output <path>
+
+  - name: dom
+    description: Extract interactive DOM elements with CSS selectors
+    args: []
+    options:
+      - --text-only
+
+  - name: navigate
+    description: Navigate to URL
+    args:
+      - <url>
+    options:
+      - --wait <seconds>
+
+  - name: dom_type
+    description: Type text into element by CSS selector (Puppeteer)
+    args:
+      - <selector>
+      - <text>
+
+  - name: dom_click
+    description: Click element by CSS selector (Puppeteer)
+    args:
+      - <selector>
+
+  - name: click
+    description: Click at screen coordinates (pyautogui)
+    args:
+      - <x>
+      - <y>
+
+  - name: type
+    description: Type at screen coordinates (pyautogui fallback)
+    args:
+      - <x>
+      - <y>
+      - <text>
+
+  - name: find
+    description: Locate element via LocateAnything visual grounding
+    args:
+      - <description>
+
+  - name: key
+    description: Press key combo
+    args:
+      - <combo>
+
+  - name: scroll
+    description: Scroll page up or down
+    args:
+      - <up|down>
+    options:
+      - --amount <steps>
+
+  - name: eval
+    description: Execute JavaScript in page
+    args:
+      - <code>
+
+  - name: url
+    description: Get current page URL and title
+    args: []
+
+  - name: focus
+    description: Focus Chrome window
+    args: []
+
+  - name: wait
+    description: Sleep for N seconds
+    args:
+      - <seconds>
+
+  - name: check
+    description: Verify all components are ready
+    args: []
+
+# Environment variables for remote mode (all optional)
+env:
+  optional:
+    - BROWSER_USE_HOST
+    - BROWSER_USE_USER
+    - BROWSER_USE_PYTHON
+    - BROWSER_USE_REMOTE_SCRIPT
+    - LOCATE_ANYTHING_PATH
+
+# Platform compatibility (requires Chrome with --remote-debugging-port=9222)
+platforms:
+  - darwin
+  - linux
+
+engines:
+  node: ">=16.0.0"
+  python: ">=3.9"
+
+# Metadata
+keywords:
+  - browser
+  - automation
+  - puppeteer
+  - locateanything
+  - vision
+  - web
+  - scraping
+  - rpa
+
+category: automation
+icon: "\U0001F310"

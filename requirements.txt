@@ -1,0 +1,11 @@
+# Core dependencies for browser-use skill
+# Install into the same venv that has mlx-vlm (e.g. ~/.venv-vllm-mlx)
+
+mss>=9.0.0          # Fast screenshots
+pyautogui>=0.9.54   # OS-level mouse/keyboard control
+Pillow>=10.0.0      # Image handling
+requests>=2.31.0    # HTTP client for vLLM API
+
+# These should already be in your MLX venv:
+# mlx-vlm>=0.4.0     # LocateAnything-3B via MLX
+# mlx-lm>=0.31.0     # MLX language model support

@@ -1,0 +1,18 @@
+{
+  "name": "openpave-browser",
+  "version": "1.0.0",
+  "description": "Vision-driven browser automation skill for OpenPAVE",
+  "author": "cnrai",
+  "license": "MIT",
+  "homepage": "https://github.com/cnrai/openpave-browser",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cnrai/openpave-browser.git"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
