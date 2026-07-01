@@ -59,6 +59,12 @@ const handlers = {
     return { ok: true, selector: cmd.selector, text: cmd.text };
   },
 
+  async type_text(cmd) {
+    const p = await getPage();
+    await p.keyboard.type(cmd.text, { delay: 10 });
+    return { ok: true, text: cmd.text };
+  },
+
   async click(cmd) {
     const p = await getPage();
     if (cmd.selector) {

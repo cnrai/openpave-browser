@@ -206,7 +206,7 @@ def cmd_dom_click(args):
 
 
 def cmd_click(args):
-    """Click at screen coordinates."""
+    """Click at viewport coordinates (Puppeteer, from find/screenshot)."""
     executor.click(args.x, args.y)
     result = {"action": "click", "x": args.x, "y": args.y}
     post_ocr(args, result)
@@ -214,7 +214,7 @@ def cmd_click(args):
 
 
 def cmd_type(args):
-    """Type at screen coordinates (fallback when no selector)."""
+    """Type at viewport coordinates (Puppeteer, from find/screenshot)."""
     executor.type_at(args.x, args.y, args.text)
     result = {"action": "type", "x": args.x, "y": args.y, "text": args.text}
     post_ocr(args, result)

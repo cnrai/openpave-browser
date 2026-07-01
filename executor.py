@@ -109,9 +109,19 @@ def type_selector(selector: str, text: str):
 
 def type_at(x: int, y: int, text: str):
     """
-    Fallback: click at screen coords + paste via daemon.
-    Used when we don't have a CSS selector (LocateAnything coords).
+    Click at viewport coords + type text.
+    Uses Puppeteer (viewport space) first, pyautogui daemon as fallback.
     """
+    # Click at viewport coords via Puppeteer
+    try:
+        r = _send_puppeteer({"action": "click", "x": x, "y": y})
+        if r.get("ok"):
+            # Type via Puppeteer keyboard
+            _send_puppeteer({"action": "type_text", "text": text})
+            return
+    except Exception:
+        pass
+    # Fallback: pyautogui click + paste
     _send_daemon({"action": "type", "x": x, "y": y, "text": text})
 
 
@@ -127,7 +137,20 @@ def click_selector(selector: str):
 
 
 def click(x: int, y: int):
-    """Click at screen coordinates (pyautogui daemon)."""
+    """Click at viewport coordinates.
+
+    Uses Puppeteer's page.mouse.click() which operates in viewport space —
+    the same coordinate system as screenshots and LocateAnything results.
+    Falls back to pyautogui daemon (absolute screen coords) if Puppeteer
+    is unavailable.
+    """
+    try:
+        r = _send_puppeteer({"action": "click", "x": x, "y": y})
+        if r.get("ok"):
+            return r
+    except Exception:
+        pass
+    # Fallback: pyautogui (absolute screen coords — may be offset)
     _send_daemon({"action": "click", "x": x, "y": y})
 
 
