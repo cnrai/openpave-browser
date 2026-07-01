@@ -75,10 +75,11 @@ if [ -n "$REMOTE_HOST" ]; then
   if [ "$HAS_OCR" = true ]; then
     # Run command, then SCP screenshot back, patch path in JSON
     REMOTE_SCR="/tmp/browser-use-screenshot.png"
-    OUTPUT=$($SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}" 2>/dev/null)
+    OUTPUT=$($SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}" 2>/dev/null) || true
     LOCAL_SCR="/tmp/browser-use-screenshot.png"
-    $SCP_CMD "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_SCR}" "${LOCAL_SCR}" 2>/dev/null
+    $SCP_CMD "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_SCR}" "${LOCAL_SCR}" 2>/dev/null || true
     echo "$OUTPUT" | sed "s|${REMOTE_SCR}|${LOCAL_SCR}|g"
+    exit 0
   else
     exec $SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}"
   fi

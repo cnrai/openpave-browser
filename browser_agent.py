@@ -42,8 +42,42 @@ def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False))
 
 
+_OCR_ENGINE = None
+
+
+def _get_ocr():
+    """Lazy-init OCR engine (rapidocr_onnxruntime / PP-OCRv4)."""
+    global _OCR_ENGINE
+    if _OCR_ENGINE is not None:
+        return _OCR_ENGINE
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        _OCR_ENGINE = RapidOCR()
+        return _OCR_ENGINE
+    except Exception:
+        return None
+
+
+def _ocr_image(path):
+    """Run OCR on an image file, return (text, confidence)."""
+    engine = _get_ocr()
+    if engine is None:
+        return None
+    result, elapse = engine(path)
+    if not result:
+        return ""
+    lines = []
+    confs = []
+    for box, text, conf in result:
+        lines.append(text)
+        confs.append(conf)
+    mean_conf = sum(confs) / len(confs) if confs else 0
+    return {"text": "\n".join(lines), "meanConfidence": round(mean_conf, 3),
+            "lines": len(lines)}
+
+
 def post_ocr(args, result: dict):
-    """If --ocr is set, wait for network idle + screenshot, add to result."""
+    """If --ocr is set: wait for network idle, screenshot, run OCR, add to result."""
     if not getattr(args, "ocr", False):
         return
     try:
@@ -54,6 +88,11 @@ def post_ocr(args, result: dict):
         path, w, h = executor.auto_screenshot()
         result["screenshot"] = path
         result["screenshot_size"] = {"width": w, "height": h}
+        ocr_result = _ocr_image(path)
+        if ocr_result is not None:
+            result["ocr"] = ocr_result
+        else:
+            result["ocr_error"] = "OCR engine not available (install rapidocr-onnxruntime)"
     except Exception as e:
         result["screenshot_error"] = str(e)
 
@@ -82,11 +121,16 @@ def cmd_screenshot(args):
         image = executor.screenshot()
     out_path = args.output or "/tmp/browser-use-screenshot.png"
     image.save(out_path)
-    emit({
+    result = {
         "action": "screenshot",
         "path": out_path,
         "size": {"width": image.size[0], "height": image.size[1]},
-    })
+    }
+    if getattr(args, "ocr", False):
+        ocr_result = _ocr_image(out_path)
+        if ocr_result is not None:
+            result["ocr"] = ocr_result
+    emit(result)
 
 
 def cmd_dom(args):
@@ -307,6 +351,8 @@ def main():
     p = sub.add_parser("screenshot", help="Capture page screenshot")
     p.add_argument("--output", default=None)
     p.add_argument("--full", action="store_true", help="Full page capture")
+    p.add_argument("--ocr", action="store_true",
+                   help="Run OCR on screenshot and include text in output")
     p.set_defaults(func=cmd_screenshot)
 
     # dom
