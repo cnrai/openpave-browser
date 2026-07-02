@@ -1,22 +1,32 @@
 # openpave-browser
 
-🌐 Browser automation skill for OpenPAVE — control a web browser through Puppeteer (precise selector-based control) and LocateAnything-3B (visual grounding fallback).
+Browser automation skill for OpenPAVE — control a web browser through Puppeteer (precise selector-based control) and pyautogui (coordinate-based fallback). Includes OCR-on-by-default so every command returns the page's visible text.
 
-## Installation
+## Quick Start
 
 ```bash
-# From GitHub
 pave install cnrai/openpave-browser
+```
 
-# From local directory
-pave install ~/pave-apps/openpave-browser
+Then verify your setup:
+
+```bash
+# This checks Chrome, Python deps, Node.js, and prints setup hints
+browser-use check
+```
+
+Fix anything it says is missing, then:
+
+```bash
+browser-use navigate "https://example.com"
+browser-use url        # returns URL, title, and OCR text
 ```
 
 ## Prerequisites
 
-### Chrome with Remote Debugging
+### 1. Chrome with Remote Debugging (required)
 
-Launch Chrome with remote debugging enabled:
+Launch Chrome with the debugging port before using any browser commands:
 
 ```bash
 # macOS
@@ -26,19 +36,48 @@ Launch Chrome with remote debugging enabled:
 google-chrome --remote-debugging-port=9222
 ```
 
-### Python Dependencies
+### 2. Python Dependencies (required)
 
 ```bash
 pip3 install -r requirements.txt
 ```
 
-### Node.js Dependencies (for Puppeteer bridge)
+This installs `mss`, `pyautogui`, `Pillow`, and `requests`.
+
+### 3. OCR Engine (required, on by default)
+
+OCR is **on by default** — every command returns the page's visible text. You need:
 
 ```bash
-npm install
+pip3 install rapidocr-onnxruntime
 ```
 
-This installs `puppeteer-core` which connects to your existing Chrome instance via CDP — no bundled Chromium download needed.
+To disable OCR for a single command (faster response):
+
+```bash
+browser-use navigate "https://example.com" --no-ocr
+```
+
+### 4. Node.js + Puppeteer (required for selector commands)
+
+```bash
+# Node.js 16+ required
+node --version
+
+# Install puppeteer-core in the skill directory
+cd ~/.pave/skills/browser-use && npm install
+```
+
+### 5. LocateAnything-3B (optional)
+
+Only needed for the `find` command (visual grounding by natural-language description):
+
+```bash
+pip3 install mlx-vlm
+huggingface-cli download nvidia/LocateAnything-3B
+```
+
+All other 14 commands work without it.
 
 ## Architecture
 
@@ -62,9 +101,6 @@ browser-use.sh ── routes to ──┐
   Puppeteer bridge    pyautogui + mss
   (selector-based)    (coordinate-based)
   via Unix socket     (fallback / screenshots)
-          │
-  LocateAnything-3B
-  (visual grounding)
 ```
 
 ### Three Layers of Control
@@ -79,34 +115,43 @@ browser-use.sh ── routes to ──┐
 
 Runs entirely on the current machine. Requires Chrome, Python 3.9+, and Node.js 16+ locally.
 
-```bash
-~/.pave/skills/browser-use/browser-use.sh navigate "https://example.com"
-```
-
 ### Remote Mode
 
-For deployments where the model/GPU or Chrome is on a different machine. Set `BROWSER_USE_HOST`:
+For deployments where the model/GPU or Chrome is on a different machine. Set these in `~/.pave/tokens.yaml`:
+
+```yaml
+BROWSER_USE_HOST: "192.168.1.100"
+BROWSER_USE_USER: "myuser"
+BROWSER_USE_PYTHON: "/path/to/python3"
+```
+
+Or as environment variables:
 
 ```bash
-export BROWSER_USE_HOST=192.168.40.167
-export BROWSER_USE_USER=cnradmin
-export BROWSER_USE_PYTHON=~/.venv-vllm-mlx/bin/python3
+export BROWSER_USE_HOST=192.168.1.100
+export BROWSER_USE_USER=myuser
+export BROWSER_USE_PYTHON=/path/to/python3
 ```
 
 All commands are forwarded over SSH. Screenshots are SCP'd back automatically.
+
+**Remote prerequisites:**
+- Passwordless SSH access (`ssh-copy-id user@host`)
+- Chrome with `--remote-debugging-port=9222` running on the remote
+- Python deps installed on the remote
+- `browser_agent.py` on the remote (auto-detected at `~/.pave/skills/browser-use/`)
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `screenshot` | Capture page screenshot |
-| `dom` | Extract interactive DOM elements with CSS selectors |
-| `dom --text-only` | DOM as compact text summary |
+| `dom [--text-only]` | Extract interactive DOM elements with CSS selectors |
 | `navigate <url>` | Navigate to URL |
 | `dom_type <selector> <text>` | Type text into element by CSS selector |
 | `dom_click <selector>` | Click element by CSS selector |
-| `click <x> <y>` | Click at screen coordinates |
-| `type <x> <y> <text>` | Type at screen coordinates |
+| `click <x> <y>` | Click at viewport coordinates |
+| `type <x> <y> <text>` | Type at viewport coordinates |
 | `find <description>` | Locate element via visual grounding |
 | `key <combo>` | Press key combo (e.g. `enter`, `ctrl+a`) |
 | `scroll <up\|down>` | Scroll page |
@@ -115,6 +160,8 @@ All commands are forwarded over SSH. Screenshots are SCP'd back automatically.
 | `focus` | Focus Chrome window |
 | `wait <seconds>` | Sleep |
 | `check` | Verify all components are ready |
+
+All action commands accept `--no-ocr` to skip OCR (faster response).
 
 ## Environment Variables
 

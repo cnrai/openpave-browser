@@ -18,7 +18,11 @@ import subprocess
 import sys
 import time
 from typing import Optional, Tuple
-from PIL import Image
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -284,7 +288,7 @@ def scroll(direction: str = "down", amount: int = 500):
 # ── Screenshot ────────────────────────────────────────────────────────────
 
 
-def screenshot() -> Image.Image:
+def screenshot():
     """Capture screenshot via Puppeteer (page-only, clean)."""
     r = _send_puppeteer({"action": "screenshot"})
     if not r.get("ok"):
@@ -295,7 +299,7 @@ def screenshot() -> Image.Image:
     return Image.open(r["path"])
 
 
-def screenshot_full() -> Image.Image:
+def screenshot_full():
     """Capture full-page screenshot (scrolls entire page)."""
     r = _send_puppeteer({"action": "screenshot", "fullPage": True,
                          "output": "/tmp/browser-use-screenshot-full.png"})

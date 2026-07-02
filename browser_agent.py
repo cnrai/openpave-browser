@@ -28,14 +28,14 @@ Commands:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from detector import Locator
-import executor
+import executor  # noqa: E402
 
 
 def emit(data: dict):
@@ -102,9 +102,10 @@ def post_ocr(args, result: dict):
 _LOCATOR = None
 
 
-def _get_locator() -> Locator:
+def _get_locator():
     global _LOCATOR
     if _LOCATOR is None:
+        from detector import Locator
         _LOCATOR = Locator()
         _LOCATOR.load()
     return _LOCATOR
@@ -293,40 +294,189 @@ def cmd_focus(args):
 
 
 def cmd_check(args):
-    """Verify all components."""
-    results = {"components": {}, "ready": True}
-
-    # Puppeteer bridge
-    if executor.puppeteer_available():
-        results["components"]["puppeteer"] = "OK (connected to Chrome)"
-    else:
-        results["components"]["puppeteer"] = "UNREACHABLE"
-        results["ready"] = False
-
-    # pyautogui daemon
-    if executor.test_input():
-        results["components"]["pyautogui daemon"] = "OK"
-    else:
-        results["components"]["pyautogui daemon"] = "FAILED"
-        results["ready"] = False
-
-    # Python packages
+    """Verify all components and print actionable setup instructions."""
     import importlib
-    for pkg in ["mss", "pyautogui", "PIL", "mlx_vlm"]:
-        spec = importlib.util.find_spec(pkg)
-        results["components"][pkg] = "OK" if spec else "MISSING"
-        if not spec:
-            results["ready"] = False
+    import importlib.util
+    import shutil
+    import urllib.request
 
-    # LocateAnything model
-    la_path = os.path.expanduser("~/model-label/LocateAnything-3B-MLX")
-    if os.path.isdir(la_path):
-        results["components"]["LocateAnything-3B"] = "ready (%s)" % la_path
+    components = {}
+    hints = []
+    ready = True
+
+    is_remote = bool(os.environ.get("BROWSER_USE_HOST"))
+    mode = "remote (%s)" % os.environ.get("BROWSER_USE_HOST") if is_remote else "local"
+
+    # ── Chrome (required for everything) ────────────���───────────────────────
+    chrome_ok = False
+    chrome_detail = ""
+    try:
+        resp = urllib.request.urlopen(
+            "http://localhost:9222/json/version", timeout=3)
+        info = json.loads(resp.read())
+        browser = info.get("Browser", "unknown")
+        chrome_detail = "%s at localhost:9222" % browser
+        chrome_ok = True
+    except Exception as e:
+        chrome_detail = str(e)[:80]
+    components["chrome"] = {
+        "status": "ok" if chrome_ok else "missing",
+        "detail": chrome_detail,
+        "required_for": "all commands",
+    }
+    if not chrome_ok:
+        ready = False
+        hints.append(
+            "START CHROME: Launch Chrome with remote debugging:\n"
+            "  macOS:   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222\n"
+            "  Linux:   google-chrome --remote-debugging-port=9222")
+
+    # ── Node.js (required for Puppeteer bridge) ─────────────────────────────
+    node_ok = False
+    node_detail = ""
+    node_bin = shutil.which("node") or os.path.expanduser("~/tools/node/bin/node")
+    try:
+        r = subprocess.run([node_bin, "--version"], capture_output=True,
+                           text=True, timeout=5)
+        if r.returncode == 0:
+            node_detail = r.stdout.strip()
+            node_ok = True
+        else:
+            node_detail = "node binary found but --version failed"
+    except Exception as e:
+        node_detail = str(e)[:80]
+    components["node"] = {
+        "status": "ok" if node_ok else "missing",
+        "detail": node_detail,
+        "required_for": "navigate, dom, dom_click, dom_type, eval, click, type, scroll, key",
+    }
+    if not node_ok:
+        ready = False
+        hints.append(
+            "INSTALL NODE.JS: Node.js 16+ is required for the Puppeteer bridge.\n"
+            "  Install from https://nodejs.org/ or: brew install node")
+
+    # ── puppeteer-core npm package ──────────────────────────────────────────
+    pp_ok = False
+    pp_detail = ""
+    if node_ok:
+        node_dir = os.path.join(SCRIPT_DIR, "node")
+        try:
+            r = subprocess.run(
+                [node_bin, "-e",
+                 "require('puppeteer-core'); console.log('ok')"],
+                capture_output=True, text=True, timeout=5,
+                cwd=node_dir)
+            if r.returncode == 0 and "ok" in r.stdout:
+                pp_ok = True
+                pp_detail = "puppeteer-core loaded"
+            else:
+                pp_detail = (r.stderr or r.stdout).strip()[:80]
+        except Exception as e:
+            pp_detail = str(e)[:80]
     else:
-        results["components"]["LocateAnything-3B"] = "not found"
+        pp_detail = "skipped (node missing)"
+    components["puppeteer-core"] = {
+        "status": "ok" if pp_ok else "missing",
+        "detail": pp_detail,
+        "required_for": "selector-based commands (dom_click, dom_type, dom, eval)",
+    }
+    if node_ok and not pp_ok:
+        ready = False
+        hints.append(
+            "INSTALL PUPPETEER: Run in the skill directory:\n"
+            "  cd %s && npm install" % SCRIPT_DIR)
 
-    emit(results)
-    if not results["ready"]:
+    # ── Python packages ─────────────────────────────────────────────────────
+    core_missing = []
+    for pkg, label, required_for in [
+        ("mss", "mss (screenshots)", "screenshot"),
+        ("pyautogui", "pyautogui (mouse/keyboard)", "click, type, key, scroll (fallback)"),
+        ("PIL", "Pillow (image handling)", "screenshot, OCR"),
+    ]:
+        spec = importlib.util.find_spec(pkg)
+        is_ok = spec is not None
+        components[label] = {
+            "status": "ok" if is_ok else "missing",
+            "required_for": required_for,
+        }
+        if not is_ok:
+            core_missing.append(pkg)
+
+    if core_missing:
+        ready = False
+        hints.append(
+            "INSTALL PYTHON DEPS: Run in the skill directory:\n"
+            "  pip3 install -r requirements.txt")
+
+    # OCR (optional but on by default)
+    ocr_spec = importlib.util.find_spec("rapidocr_onnxruntime")
+    components["rapidocr-onnxruntime (OCR engine)"] = {
+        "status": "ok" if ocr_spec else "missing",
+        "required_for": "OCR (on by default)",
+    }
+    if not ocr_spec:
+        hints.append(
+            "INSTALL OCR (optional, recommended): OCR is on by default.\n"
+            "  pip3 install rapidocr-onnxruntime")
+
+    # ── LocateAnything model (optional, for `find` only) ────────────────────
+    la_paths = [
+        os.environ.get("LOCATE_ANYTHING_PATH", ""),
+        os.path.expanduser("~/model-label/LocateAnything-3B-MLX"),
+        os.path.expanduser("~/.cache/huggingface/hub/models--nvidia--LocateAnything-3B"),
+    ]
+    la_found = any(p and os.path.isdir(p) for p in la_paths)
+    mlx_spec = importlib.util.find_spec("mlx_vlm")
+    components["LocateAnything-3B"] = {
+        "status": ("ok" if la_found and mlx_spec
+                   else "missing (optional)"),
+        "detail": ("model + mlx_vlm ready" if la_found and mlx_spec
+                   else "only needed for the 'find' command"),
+        "required_for": "find (visual grounding by description)",
+    }
+    if not (la_found and mlx_spec):
+        hints.append(
+            "LOCATEANYTHING (optional): Only needed for the 'find' command.\n"
+            "  Install mlx-vlm: pip3 install mlx-vlm\n"
+            "  Download model: huggingface-cli download nvidia/LocateAnything-3B")
+
+    # ── Remote mode checks ──────────────────────────────────────────────────
+    if is_remote:
+        host = os.environ.get("BROWSER_USE_HOST")
+        user = os.environ.get("BROWSER_USE_USER", os.environ.get("USER", ""))
+        ssh_ok = False
+        ssh_detail = ""
+        try:
+            r = subprocess.run(
+                ["ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes",
+                 "%s@%s" % (user, host), "echo", "ok"],
+                capture_output=True, text=True, timeout=8)
+            if r.returncode == 0 and "ok" in r.stdout:
+                ssh_ok = True
+                ssh_detail = "SSH to %s@%s works" % (user, host)
+            else:
+                ssh_detail = (r.stderr or r.stdout)[:80]
+        except Exception as e:
+            ssh_detail = str(e)[:80]
+        components["ssh"] = {
+            "status": "ok" if ssh_ok else "error",
+            "detail": ssh_detail,
+            "required_for": "remote mode (BROWSER_USE_HOST is set)",
+        }
+        if not ssh_ok:
+            ready = False
+            hints.append(
+                "SSH ACCESS: Set up passwordless SSH to %s@%s:\n"
+                "  ssh-copy-id %s@%s" % (user, host, user, host))
+
+    emit({
+        "status": "ready" if ready else "not_ready",
+        "mode": mode,
+        "components": components,
+        "setup_hints": hints if hints else ["All components ready!"],
+    })
+    if not ready:
         sys.exit(1)
 
 
