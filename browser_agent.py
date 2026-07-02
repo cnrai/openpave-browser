@@ -39,7 +39,7 @@ import executor  # noqa: E402
 
 
 def emit(data: dict):
-    print(json.dumps(data, ensure_ascii=False))
+    print(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
 _OCR_ENGINE = None
