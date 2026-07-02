@@ -38,8 +38,25 @@ sys.path.insert(0, SCRIPT_DIR)
 import executor  # noqa: E402
 
 
+def _strip_empty(obj):
+    """Recursively remove null, "", [], and {} from nested structures.
+
+    Preserves meaningful falsy values: 0, False, 0.0.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: v
+            for k, v in ((k, _strip_empty(v)) for k, v in obj.items())
+            if v is not None and v != "" and v != [] and v != {}
+        }
+    if isinstance(obj, list):
+        return [_strip_empty(item) for item in obj]
+    return obj
+
+
 def emit(data: dict):
-    print(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+    cleaned = _strip_empty(data)
+    print(json.dumps(cleaned, ensure_ascii=False, separators=(",", ":")))
 
 
 _OCR_ENGINE = None

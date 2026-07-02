@@ -57,13 +57,72 @@ if (!env.LOCATE_ANYTHING_API_URL && process.env.PAVE_EPM_URL) {
   }
 }
 
+// ── Strip empty fields recursively ──────────────────────────────────────────
+// Removes null, "", [], and {} from nested objects/arrays.
+// Preserves meaningful falsy values: 0, false, 0.0.
+function stripEmpty(obj) {
+  if (Array.isArray(obj)) {
+    return obj.map(stripEmpty).filter(
+      (item) =>
+        item !== null &&
+        item !== "" &&
+        item !== undefined &&
+        !(Array.isArray(item) && item.length === 0) &&
+        !(
+          item !== null &&
+          typeof item === "object" &&
+          !Array.isArray(item) &&
+          Object.keys(item).length === 0
+        )
+    );
+  }
+  if (obj !== null && typeof obj === "object") {
+    const result = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const stripped = stripEmpty(value);
+      if (
+        stripped !== null &&
+        stripped !== "" &&
+        stripped !== undefined &&
+        !(Array.isArray(stripped) && stripped.length === 0) &&
+        !(
+          stripped !== null &&
+          typeof stripped === "object" &&
+          !Array.isArray(stripped) &&
+          Object.keys(stripped).length === 0
+        )
+      ) {
+        result[key] = stripped;
+      }
+    }
+    return result;
+  }
+  return obj;
+}
+
 // ── Spawn browser-use.sh ────────────────────────────────────────────────────
 const script = path.join(__dirname, "browser-use.sh");
 const args = process.argv.slice(2);
 
 const result = spawnSync("bash", [script, ...args], {
-  stdio: "inherit",
+  stdio: ["inherit", "pipe", "pipe"],
   env: env,
+  maxBuffer: 10 * 1024 * 1024,
 });
+
+// Pass stderr through directly
+if (result.stderr) process.stderr.write(result.stderr);
+
+// Process stdout: parse JSON, strip empty fields, re-serialize compactly.
+// JSON.stringify() defaults to no spaces (", " and ": " are only added
+// when a space argument is passed), so this strips whitespace AND empties.
+const stdout = (result.stdout || "").toString();
+try {
+  const parsed = JSON.parse(stdout.trim());
+  process.stdout.write(JSON.stringify(stripEmpty(parsed)));
+} catch {
+  // Not valid JSON — pass through unchanged
+  process.stdout.write(stdout);
+}
 
 process.exit(result.status || 0);
