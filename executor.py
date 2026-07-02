@@ -296,6 +296,8 @@ def screenshot():
         r = _send_daemon({"action": "screenshot"})
     if not r.get("ok"):
         raise RuntimeError(f"screenshot failed: {r.get('error')}")
+    if Image is None:
+        raise RuntimeError("Pillow not installed. Run: pip3 install Pillow")
     return Image.open(r["path"])
 
 
@@ -305,6 +307,8 @@ def screenshot_full():
                          "output": "/tmp/browser-use-screenshot-full.png"})
     if not r.get("ok"):
         raise RuntimeError(f"screenshot failed: {r.get('error')}")
+    if Image is None:
+        raise RuntimeError("Pillow not installed. Run: pip3 install Pillow")
     return Image.open(r["path"])
 
 
