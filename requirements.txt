@@ -1,11 +1,12 @@
-# Core dependencies for browser-use skill
-# Install into the same venv that has mlx-vlm (e.g. ~/.venv-vllm-mlx)
+# Python dependencies for browser-use skill
+# Install: pip3 install -r requirements.txt
 
-mss>=9.0.0          # Fast screenshots
-pyautogui>=0.9.54   # OS-level mouse/keyboard control
-Pillow>=10.0.0      # Image handling
-requests>=2.31.0    # HTTP client for vLLM API
+mss>=9.0.0                      # Fast screenshots
+pyautogui>=0.9.54               # OS-level mouse/keyboard control
+Pillow>=10.0.0                  # Image handling (screenshots, OCR input)
+rapidocr-onnxruntime>=1.3.0     # OCR engine (on by default)
 
-# These should already be in your MLX venv:
-# mlx-vlm>=0.4.0     # LocateAnything-3B via MLX
-# mlx-lm>=0.31.0     # MLX language model support
+# LocateAnything-3B local mode (optional — only for `find` without API):
+#   pip3 install mlx-vlm
+#   huggingface-cli download nvidia/LocateAnything-3B
+# If not installed, `find` uses the hosted API automatically (requires pave login).

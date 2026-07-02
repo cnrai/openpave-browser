@@ -5,9 +5,10 @@ name: browser-use
 version: 1.1.0
 description: >
   Control a web browser through Puppeteer (precise selector-based control)
-  + LocateAnything-3B (visual grounding fallback). Navigate pages, fill forms,
-  click elements, type text, extract DOM, take screenshots, and execute
-  JavaScript — all from PAVE agent commands.
+  + LocateAnything-3B (visual grounding fallback). Bundled Chromium — no
+  Chrome installation required. Navigate pages, fill forms, click elements,
+  type text, extract DOM, take screenshots, and execute JavaScript — all
+  from PAVE agent commands.
   
   OCR is ON by default on all action commands — each response includes the
   extracted page text. Use --no-ocr to disable for faster responses.
@@ -162,7 +163,7 @@ env:
     - BROWSER_USE_REMOTE_SCRIPT
     - LOCATE_ANYTHING_PATH
 
-# Platform compatibility (requires Chrome with --remote-debugging-port=9222)
+# Platform compatibility (bundled Chromium, no Chrome installation required)
 platforms:
   - darwin
   - linux

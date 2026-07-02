@@ -106,12 +106,10 @@ PYTHON="${BROWSER_USE_PYTHON:-python3}"
 ensure_bridge() {
   if [ ! -S /tmp/puppeteer-bridge.sock ] || [ ! -f /tmp/puppeteer-bridge-ready ]; then
     if [ -f "${SCRIPT_DIR}/node/puppeteer_bridge.js" ]; then
-      # Requires puppeteer (install if missing)
-      if ! node -e "require('puppeteer')" 2>/dev/null; then
-        if [ ! -d "${SCRIPT_DIR}/node_modules/puppeteer" ]; then
-          echo "Installing puppeteer..." >&2
-          (cd "${SCRIPT_DIR}" && npm install puppeteer 2>/dev/null)
-        fi
+      # Install puppeteer if not present (downloads bundled Chromium ~280MB on first run)
+      if [ ! -d "${SCRIPT_DIR}/node_modules/puppeteer" ]; then
+        echo "Installing puppeteer (first run, downloads Chromium ~280MB)..." >&2
+        (cd "${SCRIPT_DIR}" && npm install puppeteer 2>/dev/null)
       fi
       echo "Starting Puppeteer bridge..." >&2
       NODE_PATH="${SCRIPT_DIR}/node_modules:${NODE_PATH:-}" \
