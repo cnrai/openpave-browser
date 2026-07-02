@@ -307,6 +307,12 @@ def cmd_focus(args):
 
 def cmd_check(args):
     """Verify all components and print actionable setup instructions."""
+
+
+def cmd_force_cleanup(args):
+    """Force kill browser and clean up stale lock files."""
+    result = executor.force_cleanup()
+    emit({"action": "force_cleanup", **result})
     import importlib
     import importlib.util
     import shutil
@@ -675,6 +681,10 @@ def main():
     # check
     p = sub.add_parser("check", help="Verify all components")
     p.set_defaults(func=cmd_check)
+
+    # force_cleanup
+    p = sub.add_parser("force_cleanup", help="Kill stale browser and clean up lock files")
+    p.set_defaults(func=cmd_force_cleanup)
 
     args = parser.parse_args()
     args.func(args)

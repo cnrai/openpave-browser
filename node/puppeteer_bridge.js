@@ -26,6 +26,34 @@ const HEADLESS = process.env.PUPPETEER_HEADLESS === "1" || process.env.PUPPETEER
 let browser = null;
 let page = null;
 let launchMode = "unknown"; // "attach" or "launch"
+let _reconnectTimer = null;
+let _reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+
+// ── Reconnection ─────────────────────────────────────────────────────────────
+
+function _scheduleReconnect() {
+  /** Schedule a reconnection attempt after losing browser connection. */
+  if (_reconnectTimer) return; // Already scheduled
+  if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    console.error("[bridge] Max reconnect attempts (%d) reached, giving up", MAX_RECONNECT_ATTEMPTS);
+    return;
+  }
+  _reconnectAttempts++;
+  var delay = 2000 * _reconnectAttempts; // Backoff: 2s, 4s, 6s
+  console.error("[bridge] Scheduling reconnect attempt %d/%d in %dms", _reconnectAttempts, MAX_RECONNECT_ATTEMPTS, delay);
+  _reconnectTimer = setTimeout(async function() {
+    _reconnectTimer = null;
+    try {
+      await connect();
+      _reconnectAttempts = 0; // Reset on success
+      console.error("[bridge] Reconnected successfully");
+    } catch(e) {
+      console.error("[bridge] Reconnect attempt failed: %s", e.message);
+      _scheduleReconnect(); // Try again
+    }
+  }, delay);
+}
 
 // ── Timeout wrapper ───────────────────────────────────────────────────────
 
@@ -59,6 +87,63 @@ async function _probeCDP() {
   });
 }
 
+async function _cleanupStaleChrome() {
+  /** Kill Chromium processes using our profile directory and remove lock files. */
+  var lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+  var hasLock = lockFiles.some(function(f) {
+    return fs.existsSync(path.join(PROFILE_DIR, f));
+  });
+
+  if (!hasLock) return; // No stale Chrome detected
+
+  console.error("[bridge] Stale Chromium detected (lock files found), cleaning up...");
+
+  // Kill Chromium processes that reference our profile directory
+  try {
+    var cp = require("child_process");
+    // Find PIDs using our profile dir
+    var psOut = cp.execSync("ps aux 2>/dev/null || ps -ef 2>/dev/null", { encoding: "utf8", timeout: 5000 });
+    var lines = psOut.split("\n");
+    var pids = [];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if ((line.includes("chromium") || line.includes("chrome") || line.includes("Google Chrome")) &&
+          line.includes(PROFILE_DIR)) {
+        var match = line.match(/\b(\d+)\b/);
+        if (match && match[1]) {
+          var pid = parseInt(match[1], 10);
+          if (pid !== process.pid && pid > 1) pids.push(pid);
+        }
+      }
+    }
+    // Kill found processes (SIGTERM first, then SIGKILL after 2s)
+    for (var j = 0; j < pids.length; j++) {
+      try { process.kill(pids[j], "SIGTERM"); } catch(e) {}
+    }
+    if (pids.length > 0) {
+      await new Promise(function(r) { setTimeout(r, 2000); });
+      for (var k = 0; k < pids.length; k++) {
+        try { process.kill(pids[k], "SIGKILL"); } catch(e) {}
+      }
+      await new Promise(function(r) { setTimeout(r, 500); });
+    }
+  } catch(e) {
+    console.error("[bridge] Cleanup: ps scan failed (%s), trying pkill", e.message);
+    try {
+      var cp2 = require("child_process");
+      cp2.execSync('pkill -f "chromium.*' + PROFILE_DIR.replace(/\//g, '\\/') + '" 2>/dev/null || true', { timeout: 5000 });
+      await new Promise(function(r) { setTimeout(r, 2000); });
+    } catch(e2) {}
+  }
+
+  // Remove lock files
+  for (var l = 0; l < lockFiles.length; l++) {
+    var lockPath = path.join(PROFILE_DIR, lockFiles[l]);
+    try { if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath); } catch(e) {}
+  }
+  console.error("[bridge] Stale Chromium cleanup complete");
+}
+
 async function connect() {
   if (browser && (browser.connected || browser.isConnected())) return;
 
@@ -66,22 +151,52 @@ async function connect() {
   var chromeVersion = await _probeCDP();
   if (chromeVersion) {
     console.error("[bridge] Attaching to Chrome %s at %s", chromeVersion, CDP_URL);
-    browser = await puppeteer.connect({ browserURL: CDP_URL, defaultViewport: null });
-    launchMode = "attach";
-    var pages = await browser.pages();
-    page = pages[pages.length - 1] || (await browser.newPage());
-    browser.on("disconnected", function() {
-      console.error("[bridge] Disconnected from browser");
+    try {
+      browser = await puppeteer.connect({ browserURL: CDP_URL, defaultViewport: null });
+      launchMode = "attach";
+      var pages = await browser.pages();
+      page = pages[pages.length - 1] || (await browser.newPage());
+      browser.on("disconnected", function() {
+        console.error("[bridge] Disconnected from browser");
+        browser = null;
+        page = null;
+        _scheduleReconnect();
+      });
+      console.error("[bridge] Connected (attach mode). Tab: %s", await page.title());
+      return;
+    } catch(e) {
+      console.error("[bridge] Attach failed: %s, falling back to launch", e.message);
       browser = null;
       page = null;
-    });
-    console.error("[bridge] Connected (attach mode). Tab: %s", await page.title());
-    return;
+    }
   }
+
+  // Clean up stale Chrome before launching
+  await _cleanupStaleChrome();
 
   // Launch bundled Chromium
   console.error("[bridge] No Chrome on :9222, launching bundled Chromium (headless: %s)", HEADLESS);
   if (!fs.existsSync(PROFILE_DIR)) fs.mkdirSync(PROFILE_DIR, { recursive: true });
+
+  // Clear ALL session/tab restore data so Chrome starts with no restored tabs
+  try {
+    var defDir = path.join(PROFILE_DIR, "Default");
+    // Delete Sessions directory contents
+    var sessDir = path.join(defDir, "Sessions");
+    if (fs.existsSync(sessDir)) {
+      for (var f of fs.readdirSync(sessDir)) fs.unlinkSync(path.join(sessDir, f));
+    }
+    // Delete individual session/tab state files
+    var staleFiles = ["Current Session", "Current Tabs", "Last Session", "Last Tabs"];
+    for (var sf of staleFiles) {
+      var fp = path.join(defDir, sf);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    }
+    console.error("[bridge] Cleared all session/tab restore data");
+  } catch (e) {
+    console.error("[bridge] Could not clear session data: %s", e.message);
+  }
+
   browser = await puppeteer.launch({
     headless: HEADLESS,
     userDataDir: PROFILE_DIR,
@@ -91,16 +206,25 @@ async function connect() {
       "--no-default-browser-check",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
+      "--disable-session-crashed-bubble",
+      "--hide-crash-restore-bubble",
       "--window-size=1280,900",
     ],
   });
   launchMode = "launch";
+  // Wait for Chrome to finish restoring tabs, then close extras
+  await new Promise(function(r) { setTimeout(r, 1500); });
   var lp = await browser.pages();
   page = lp[0] || (await browser.newPage());
+  for (var i = 1; i < lp.length; i++) {
+    try { await lp[i].close(); } catch (e) {}
+  }
+  try { await page.goto("about:blank", { waitUntil: "domcontentloaded" }).catch(function(){}); } catch (e) {}
   browser.on("disconnected", function() {
     console.error("[bridge] Browser closed");
     browser = null;
     page = null;
+    _scheduleReconnect();
   });
   console.error("[bridge] Launched bundled Chromium (launch mode). Profile: %s", PROFILE_DIR);
 }
@@ -322,6 +446,46 @@ const handlers = {
     // In attach mode, we can't control the Chrome window directly
     return { ok: true, mode: launchMode, note: "attach mode — window focus not controlled" };
   },
+
+  async force_cleanup(cmd) {
+    /** Kill browser, clean up lock files, reset state. Caller should restart bridge after. */
+    console.error("[bridge] force_cleanup requested");
+    try {
+      if (browser) {
+        try { await browser.close(); } catch(e) {
+          console.error("[bridge] browser.close() failed: %s", e.message);
+        }
+      }
+    } catch(e) {}
+    browser = null;
+    page = null;
+
+    // Kill chromium processes using our profile
+    try {
+      var cp = require("child_process");
+      cp.execSync('pkill -9 -f "chromium.*browser-profile" 2>/dev/null || true', { timeout: 5000 });
+      cp.execSync('pkill -9 -f "chrome.*browser-profile" 2>/dev/null || true', { timeout: 5000 });
+      await new Promise(function(r) { setTimeout(r, 1000); });
+    } catch(e) {}
+
+    // Remove lock files
+    var lockFiles = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+    for (var i = 0; i < lockFiles.length; i++) {
+      try {
+        var lp = path.join(PROFILE_DIR, lockFiles[i]);
+        if (fs.existsSync(lp)) fs.unlinkSync(lp);
+      } catch(e) {}
+    }
+
+    // Remove bridge socket
+    try { if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH); } catch(e) {}
+    try { if (fs.existsSync("/tmp/puppeteer-bridge-ready")) fs.unlinkSync("/tmp/puppeteer-bridge-ready"); } catch(e) {}
+
+    _reconnectAttempts = 0;
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+
+    return { ok: true, message: "cleanup complete, browser state reset" };
+  },
 };
 
 async function handleRequest(data) {
@@ -342,7 +506,11 @@ async function handleRequest(data) {
 async function main() {
   try { await connect(); } catch (err) {
     console.error("[bridge] Connect/launch failed: %s", err.message);
-    process.exit(1);
+    // Don't exit — start the server anyway. Commands will trigger reconnect via getPage().
+    // But clean up stale state so getPage() can try fresh.
+    browser = null;
+    page = null;
+    _reconnectAttempts = 0;
   }
 
   if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
@@ -370,11 +538,31 @@ async function main() {
   console.error("[bridge] Listening on %s (mode: %s)", SOCKET_PATH, launchMode);
 
   process.on("SIGINT", function() {
+    _shutdown("SIGINT");
+  });
+  process.on("SIGTERM", function() {
+    _shutdown("SIGTERM");
+  });
+
+  async function _shutdown(signal) {
+    console.error("[bridge] Received %s, shutting down gracefully", signal);
+    if (browser) {
+      try {
+        if (launchMode === "launch") {
+          await withTimeout(browser.close(), 5000, "shutdown:close");
+        } else {
+          browser.disconnect();
+        }
+      } catch(e) {
+        console.error("[bridge] Error closing browser: %s", e.message);
+      }
+    }
+    browser = null;
+    page = null;
     if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
     if (fs.existsSync("/tmp/puppeteer-bridge-ready")) fs.unlinkSync("/tmp/puppeteer-bridge-ready");
-    if (browser && launchMode === "launch") browser.close();
     process.exit(0);
-  });
+  }
 }
 
 main();

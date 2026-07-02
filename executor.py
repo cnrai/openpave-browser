@@ -38,7 +38,7 @@ def _ensure_bridge():
 
     - If socket doesn't exist: start the bridge
     - If socket exists but ping fails: kill stale bridge, restart
-    - If responsive: do nothing
+    - If responsive but browser disconnected: force cleanup + restart
     """
     ready_file = "/tmp/puppeteer-bridge-ready"
 
@@ -60,12 +60,49 @@ def _ensure_bridge():
                     break
             s.close()
             r = json.loads(data.decode().strip())
+            # Responsive AND browser connected
             return r.get("ok") and r.get("connected")
         except Exception:
             return False
 
+    def _bridge_alive():
+        """Check if bridge process exists but browser may be disconnected."""
+        if not os.path.exists(PUPPETEER_SOCKET):
+            return False
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(3)
+            s.connect(PUPPETEER_SOCKET)
+            s.sendall(b'{"action":"ping"}\n')
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\n" in data:
+                    break
+            s.close()
+            r = json.loads(data.decode().strip())
+            return r.get("ok", False)  # Bridge is alive (but browser may be disconnected)
+        except Exception:
+            return False
+
+    # Check 1: Bridge is fully responsive (bridge + browser connected)
     if _is_responsive():
         return
+
+    # Check 2: Bridge is alive but browser is disconnected — try force_cleanup
+    if _bridge_alive():
+        try:
+            r = _send_puppeteer({"action": "force_cleanup"})
+            if r.get("ok"):
+                # Cleanup done, need to restart bridge from scratch
+                _kill_bridge_daemon()
+                time.sleep(0.5)
+        except Exception:
+            pass
+        # Fall through to start fresh bridge
 
     # Kill stale bridge if any
     if os.path.exists(PUPPETEER_SOCKET):
@@ -113,16 +150,49 @@ def _ensure_bridge():
     if not node_bin:
         return  # Can't start bridge
 
+    # Kill any leftover chromium using our profile before starting fresh
+    try:
+        subprocess.run(
+            ["pkill", "-9", "-f", "chromium.*browser-profile"],
+            timeout=3, capture_output=True
+        )
+    except Exception:
+        pass
+    time.sleep(0.5)
+    # Remove stale lock files
+    profile_dir = os.path.join(os.path.expanduser("~"), ".pave", "browser-profile")
+    for fname in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        fpath = os.path.join(profile_dir, fname)
+        try:
+            if os.path.exists(fpath):
+                os.unlink(fpath)
+        except Exception:
+            pass
+
+    # Launch bridge as a daemon (detached from parent so it survives skill timeouts)
+    # Redirect stderr to a log file so we can debug issues
+    bridge_log = os.path.join(SCRIPT_DIR, "tmp", "bridge.log")
+    os.makedirs(os.path.dirname(bridge_log), exist_ok=True)
+    # Rotate log if > 1MB
+    try:
+        if os.path.exists(bridge_log) and os.path.getsize(bridge_log) > 1048576:
+            os.rename(bridge_log, bridge_log + ".old")
+    except Exception:
+        pass
+    log_fh = open(bridge_log, "a")
+
     subprocess.Popen(
         [node_bin, bridge_js],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=sys.stderr,
+        stderr=log_fh,
         env=env,
         cwd=SCRIPT_DIR,
+        start_new_session=True,  # Detach from parent — survives SIGKILL of caller
     )
 
-    # Wait for bridge to be ready (up to 50s — Chromium launch can be slow)
-    for _ in range(100):
+    # Wait for bridge to be ready (up to 30s — reduced from 50s to stay within skill timeout)
+    for _ in range(60):
         if os.path.exists(ready_file) and _is_responsive():
             return
         time.sleep(0.5)
@@ -137,7 +207,7 @@ def _send_puppeteer(cmd: dict) -> dict:
     _ensure_bridge()
     # Retry connecting if bridge is still starting up (Chromium launch can be slow)
     last_err = None
-    for attempt in range(20):
+    for attempt in range(30):
         if not os.path.exists(PUPPETEER_SOCKET):
             time.sleep(0.5)
             last_err = "socket not found"
@@ -185,6 +255,81 @@ def _send_daemon(cmd: dict) -> dict:
         data += chunk
     s.close()
     return json.loads(data.decode())
+
+
+def force_cleanup():
+    """Force kill browser and clean up stale processes/lock files.
+
+    Use when the browser is in a bad state (zombie Chrome, lock file conflicts).
+    After calling this, the next browser command will trigger a fresh launch.
+    """
+    # First, try the graceful bridge command
+    try:
+        r = _send_puppeteer({"action": "force_cleanup"})
+        if r.get("ok"):
+            return r
+    except Exception:
+        pass
+
+    # Bridge is unreachable — do it ourselves
+    import signal as _signal
+    # Kill bridge daemon
+    _kill_bridge_daemon()
+    # Kill Chromium processes using our profile
+    try:
+        subprocess.run(
+            ["pkill", "-9", "-f", "chromium.*browser-profile"],
+            timeout=5, capture_output=True
+        )
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["pkill", "-9", "-f", "chrome.*browser-profile"],
+            timeout=5, capture_output=True
+        )
+    except Exception:
+        pass
+    time.sleep(1)
+    # Remove lock files
+    for fname in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        fpath = os.path.join(PROFILE_DIR if 'PROFILE_DIR' in dir() else
+                             os.path.join(os.path.expanduser("~"), ".pave", "browser-profile"),
+                             fname)
+        try:
+            if os.path.exists(fpath):
+                os.unlink(fpath)
+        except Exception:
+            pass
+    # Remove socket and ready file
+    for fpath in (PUPPETEER_SOCKET, "/tmp/puppeteer-bridge-ready"):
+        try:
+            if os.path.exists(fpath):
+                os.unlink(fpath)
+        except Exception:
+            pass
+    return {"ok": True, "message": "force cleanup complete (manual mode)"}
+
+
+def _kill_bridge_daemon():
+    """Kill the Puppeteer bridge daemon by socket or PID file."""
+    # Try to find and kill the bridge process
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "puppeteer_bridge.js"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = result.stdout.strip().split("\n")
+        for pid in pids:
+            pid = pid.strip()
+            if pid and pid.isdigit():
+                try:
+                    os.kill(int(pid), _signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+    except Exception:
+        pass
+    time.sleep(0.5)
 
 
 def puppeteer_available() -> bool:
