@@ -2,7 +2,7 @@
 # Vision-driven browser automation via Puppeteer + LocateAnything-3B
 
 name: browser-use
-version: 1.2.0
+version: 1.2.1
 description: >
   Control a web browser through Puppeteer (precise selector-based control)
   + LocateAnything-3B (visual grounding fallback). Bundled Chromium — no
