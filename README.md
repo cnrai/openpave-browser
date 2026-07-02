@@ -70,14 +70,26 @@ cd ~/.pave/skills/browser-use && npm install
 
 ### 5. LocateAnything-3B (optional)
 
-Only needed for the `find` command (visual grounding by natural-language description):
+Only needed for the `find` command (visual grounding by natural-language description).
+
+**Option A: Hosted API (recommended, no download)**
+
+If you're logged into OpenPAVE, the API URL and JWT are auto-configured. The `find` command sends screenshots to the hosted LocateAnything service via your PAVE account. No additional setup needed.
+
+To verify:
+```bash
+browser-use check
+# Should show LocateAnything-3B: status=ok, mode=api
+```
+
+**Option B: Local model**
 
 ```bash
 pip3 install mlx-vlm
 huggingface-cli download nvidia/LocateAnything-3B
 ```
 
-All other 14 commands work without it.
+All other 14 commands work without LocateAnything.
 
 ## Architecture
 
@@ -173,7 +185,9 @@ All optional:
 | `BROWSER_USE_USER` | SSH user for remote mode | Current user |
 | `BROWSER_USE_PYTHON` | Python binary path | `python3` |
 | `BROWSER_USE_REMOTE_SCRIPT` | Path to `browser_agent.py` on remote | Auto-detect |
-| `LOCATE_ANYTHING_PATH` | Path to LocateAnything-3B model | Auto-detect |
+| `LOCATE_ANYTHING_API_URL` | API endpoint for hosted LocateAnything | Auto-derived from PAVE_EPM_URL |
+| `LOCATE_ANYTHING_API_KEY` | Auth token for hosted API | Auto-loaded from PAVE JWT |
+| `LOCATE_ANYTHING_LOCAL` | Set to `1` to force local model | _(auto-detect)_ |
 
 ## License
 

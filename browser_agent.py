@@ -226,11 +226,23 @@ def cmd_find(args):
     """Locate element visually via LocateAnything."""
     locator = _get_locator()
     image = executor.screenshot()
-    print("Searching for: %r" % args.description, file=sys.stderr)
-    coords = locator.find_element(image, args.description, as_point=True)
+    print("Searching for: %r (mode: %s)" % (args.description, locator.mode), file=sys.stderr)
+    try:
+        coords = locator.find_element(image, args.description, as_point=True)
+    except RuntimeError as e:
+        emit({"action": "find", "found": False,
+              "description": args.description,
+              "error": str(e)})
+        sys.exit(1)
     if coords is None:
         print("Point mode failed, retrying with box mode...", file=sys.stderr)
-        coords = locator.find_element(image, args.description, as_point=False)
+        try:
+            coords = locator.find_element(image, args.description, as_point=False)
+        except RuntimeError as e:
+            emit({"action": "find", "found": False,
+                  "description": args.description,
+                  "error": str(e)})
+            sys.exit(1)
     if coords is None:
         emit({"action": "find", "found": False,
               "description": args.description})
@@ -420,26 +432,67 @@ def cmd_check(args):
             "INSTALL OCR (optional, recommended): OCR is on by default.\n"
             "  pip3 install rapidocr-onnxruntime")
 
-    # ── LocateAnything model (optional, for `find` only) ────────────────────
-    la_paths = [
+    # ── LocateAnything (for `find` command) ─────────────────────────────────
+    la_api_url = os.environ.get("LOCATE_ANYTHING_API_URL", "")
+    la_api_key = os.environ.get("LOCATE_ANYTHING_API_KEY", "")
+    la_local_paths = [
         os.environ.get("LOCATE_ANYTHING_PATH", ""),
         os.path.expanduser("~/model-label/LocateAnything-3B-MLX"),
         os.path.expanduser("~/.cache/huggingface/hub/models--nvidia--LocateAnything-3B"),
     ]
-    la_found = any(p and os.path.isdir(p) for p in la_paths)
+    la_local_found = any(p and os.path.isdir(p) for p in la_local_paths)
     mlx_spec = importlib.util.find_spec("mlx_vlm")
-    components["LocateAnything-3B"] = {
-        "status": ("ok" if la_found and mlx_spec
-                   else "missing (optional)"),
-        "detail": ("model + mlx_vlm ready" if la_found and mlx_spec
-                   else "only needed for the 'find' command"),
-        "required_for": "find (visual grounding by description)",
-    }
-    if not (la_found and mlx_spec):
+
+    if la_api_url:
+        # API mode configured — verify connectivity
+        import urllib.request
+        import urllib.error
+        api_ok = False
+        api_detail = ""
+        health_url = la_api_url.replace("/chat/completions", "/models").replace("/v1/", "/v1/")
+        # Try to hit the models endpoint
+        models_url = la_api_url.rsplit("/", 1)[0] + "/models"  # .../v1/chat/completions → .../v1/models
+        try:
+            req = urllib.request.Request(models_url)
+            if la_api_key:
+                req.add_header("Authorization", "Bearer " + la_api_key)
+            resp = urllib.request.urlopen(req, timeout=5)
+            api_ok = True
+            api_detail = "connected to %s" % la_api_url[:60]
+        except Exception as e:
+            api_detail = str(e)[:80]
+        components["LocateAnything-3B"] = {
+            "status": "ok" if api_ok else "error",
+            "mode": "api",
+            "detail": api_detail or la_api_url[:60],
+            "required_for": "find (visual grounding by description)",
+        }
+        if not api_ok:
+            hints.append(
+                "LOCATEANYTHING API: Cannot reach %s\n"
+                "  Check your network connection and JWT token.\n"
+                "  The API key is auto-loaded from ~/.pave/membership-credentials.json.\n"
+                "  To use a local model instead: set LOCATE_ANYTHING_LOCAL=1" % la_api_url[:60])
+    elif la_local_found and mlx_spec:
+        components["LocateAnything-3B"] = {
+            "status": "ok",
+            "mode": "local",
+            "detail": "model + mlx_vlm ready",
+            "required_for": "find (visual grounding by description)",
+        }
+    else:
+        components["LocateAnything-3B"] = {
+            "status": "not_configured",
+            "mode": "none",
+            "detail": "Set LOCATE_ANYTHING_API_URL for hosted mode, or install locally",
+            "required_for": "find (visual grounding by description)",
+        }
         hints.append(
-            "LOCATEANYTHING (optional): Only needed for the 'find' command.\n"
-            "  Install mlx-vlm: pip3 install mlx-vlm\n"
-            "  Download model: huggingface-cli download nvidia/LocateAnything-3B")
+            "LOCATEANYTHING (for 'find' command): Not configured.\n"
+            "  Option A (hosted, no download): Ensure PAVE is logged in.\n"
+            "    The API URL is derived from PAVE_EPM_URL automatically.\n"
+            "    Set LOCATE_ANYTHING_API_URL in ~/.pave/tokens.yaml to override.\n"
+            "  Option B (local model): pip3 install mlx-vlm && huggingface-cli download nvidia/LocateAnything-3B")
 
     # ── Remote mode checks ──────────────────────────────────────────────────
     if is_remote:
