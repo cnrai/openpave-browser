@@ -121,8 +121,8 @@ def _ensure_bridge():
         cwd=SCRIPT_DIR,
     )
 
-    # Wait for bridge to be ready (up to 15s)
-    for _ in range(30):
+    # Wait for bridge to be ready (up to 50s — Chromium launch can be slow)
+    for _ in range(100):
         if os.path.exists(ready_file) and _is_responsive():
             return
         time.sleep(0.5)
@@ -132,11 +132,26 @@ def _send_puppeteer(cmd: dict) -> dict:
     """Send command to Puppeteer bridge (newline-delimited JSON).
 
     Auto-starts the bridge daemon if it's not running or unresponsive.
+    Retries up to 10s if bridge is still warming up (socket not yet available).
     """
     _ensure_bridge()
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(TIMEOUT)
-    s.connect(PUPPETEER_SOCKET)
+    # Retry connecting if bridge is still starting up (Chromium launch can be slow)
+    last_err = None
+    for attempt in range(20):
+        if not os.path.exists(PUPPETEER_SOCKET):
+            time.sleep(0.5)
+            last_err = "socket not found"
+            continue
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect(PUPPETEER_SOCKET)
+            break
+        except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
+            last_err = str(e)
+            time.sleep(0.5)
+    else:
+        raise RuntimeError(f"puppeteer bridge not reachable after 10s: {last_err}")
     # Send request + newline
     s.sendall((json.dumps(cmd) + "\n").encode())
     # Read response line
