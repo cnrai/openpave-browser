@@ -34,6 +34,7 @@ try {
 // JWT is NOT loaded here — detector.py reads it fresh on each API call
 // (PAVE rotates the token every ~15 min, so caching it would go stale).
 // If user hasn't set the API URL explicitly, derive it from PAVE's EPM URL.
+// Auto-persist to tokens.yaml so future runs don't need PAVE_EPM_URL in env.
 if (!env.LOCATE_ANYTHING_API_URL && process.env.PAVE_EPM_URL) {
   var epmUrl = process.env.PAVE_EPM_URL.replace(/\/$/, "");
   // Don't double-append if PAVE_EPM_URL already ends with /chat/completions
@@ -41,6 +42,19 @@ if (!env.LOCATE_ANYTHING_API_URL && process.env.PAVE_EPM_URL) {
     epmUrl += "/chat/completions";
   }
   env.LOCATE_ANYTHING_API_URL = epmUrl;
+
+  // Persist to tokens.yaml if not already there
+  try {
+    var tokensContent = fs.existsSync(tokensPath)
+      ? fs.readFileSync(tokensPath, "utf8")
+      : "";
+    if (!tokensContent.includes("LOCATE_ANYTHING_API_URL")) {
+      var line = "LOCATE_ANYTHING_API_URL: \"" + epmUrl + "\"\n";
+      fs.appendFileSync(tokensPath, line);
+    }
+  } catch (e) {
+    // Non-fatal — env var is set for this run
+  }
 }
 
 // ── Spawn browser-use.sh ────────────────────────────────────────────────────

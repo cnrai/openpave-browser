@@ -507,12 +507,14 @@ def cmd_check(args):
         components["LocateAnything-3B"] = {
             "status": "not_configured",
             "mode": "none",
-            "detail": "Ensure PAVE is logged in (auto-configures API mode)",
+            "detail": "No API URL or local model found",
             "required_for": "find (visual grounding by description)",
         }
         hints.append(
             "LOCATEANYTHING (for 'find' command): Not configured.\n"
-            "  Option A (hosted, no download): Run 'pave login' — API URL and JWT are auto-configured.\n"
+            "  Option A (hosted, no download): Add this to ~/.pave/tokens.yaml:\n"
+            "    LOCATE_ANYTHING_API_URL: \"https://epm.openpave.ai/pave/v1/chat/completions\"\n"
+            "  Then run 'pave login' (provides the JWT automatically).\n"
             "  Option B (local model): pip3 install mlx-vlm && huggingface-cli download nvidia/LocateAnything-3B")
 
     # ── Remote mode checks ──────────────────────────────────────────────────
