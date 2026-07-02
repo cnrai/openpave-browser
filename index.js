@@ -30,33 +30,17 @@ try {
   // Non-fatal
 }
 
-// ── Load PAVE JWT → LOCATE_ANYTHING_API_KEY ─────────────────────────────────
-// If user hasn't explicitly set API key, auto-load from PAVE membership creds
-if (!env.LOCATE_ANYTHING_API_KEY) {
-  for (const credPath of [
-    path.join(process.env.HOME || "", ".pave", "membership-credentials.json"),
-    path.join(process.env.HOME || "", ".pave", "epm-token.json"),
-  ]) {
-    try {
-      if (fs.existsSync(credPath)) {
-        const creds = JSON.parse(fs.readFileSync(credPath, "utf8"));
-        if (creds.access_token) {
-          env.LOCATE_ANYTHING_API_KEY = creds.access_token;
-          break;
-        }
-      }
-    } catch (e) {
-      // Non-fatal
-    }
-  }
-}
-
 // ── Derive LOCATE_ANYTHING_API_URL from PAVE_EPM_URL ───────────────────────
-// If user hasn't set the API URL explicitly, derive it from PAVE's EPM URL
+// JWT is NOT loaded here — detector.py reads it fresh on each API call
+// (PAVE rotates the token every ~15 min, so caching it would go stale).
+// If user hasn't set the API URL explicitly, derive it from PAVE's EPM URL.
 if (!env.LOCATE_ANYTHING_API_URL && process.env.PAVE_EPM_URL) {
-  // PAVE_EPM_URL is like "https://epm.openpave.ai/pave/v1"
-  // API URL should be "https://epm.openpave.ai/pave/v1/chat/completions"
-  env.LOCATE_ANYTHING_API_URL = process.env.PAVE_EPM_URL.replace(/\/$/, "") + "/chat/completions";
+  var epmUrl = process.env.PAVE_EPM_URL.replace(/\/$/, "");
+  // Don't double-append if PAVE_EPM_URL already ends with /chat/completions
+  if (!epmUrl.endsWith("/chat/completions")) {
+    epmUrl += "/chat/completions";
+  }
+  env.LOCATE_ANYTHING_API_URL = epmUrl;
 }
 
 // ── Spawn browser-use.sh ────────────────────────────────────────────────────

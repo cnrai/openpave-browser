@@ -319,7 +319,9 @@ def cmd_check(args):
     is_remote = bool(os.environ.get("BROWSER_USE_HOST"))
     mode = "remote (%s)" % os.environ.get("BROWSER_USE_HOST") if is_remote else "local"
 
-    # ── Chrome (required for everything) ────────────���───────────────────────
+    # ── Chrome / Chromium ─────────────────────────────────────────────────────────
+    # Not a hard requirement — if no Chrome on :9222, the bridge launches
+    # bundled Chromium automatically (visible window for co-browsing).
     chrome_ok = False
     chrome_detail = ""
     try:
@@ -327,21 +329,15 @@ def cmd_check(args):
             "http://localhost:9222/json/version", timeout=3)
         info = json.loads(resp.read())
         browser = info.get("Browser", "unknown")
-        chrome_detail = "%s at localhost:9222" % browser
+        chrome_detail = "%s at localhost:9222 (will attach)" % browser
         chrome_ok = True
-    except Exception as e:
-        chrome_detail = str(e)[:80]
+    except Exception:
+        chrome_detail = "not running — bundled Chromium will launch automatically"
     components["chrome"] = {
-        "status": "ok" if chrome_ok else "missing",
+        "status": "ok" if chrome_ok else "auto",
         "detail": chrome_detail,
-        "required_for": "all commands",
+        "required_for": "all commands (attaches to existing or launches bundled)",
     }
-    if not chrome_ok:
-        ready = False
-        hints.append(
-            "START CHROME: Launch Chrome with remote debugging:\n"
-            "  macOS:   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222\n"
-            "  Linux:   google-chrome --remote-debugging-port=9222")
 
     # ── Node.js (required for Puppeteer bridge) ─────────────────────────────
     node_ok = False
@@ -368,7 +364,7 @@ def cmd_check(args):
             "INSTALL NODE.JS: Node.js 16+ is required for the Puppeteer bridge.\n"
             "  Install from https://nodejs.org/ or: brew install node")
 
-    # ── puppeteer-core npm package ──────────────────────────────────────────
+    # ── puppeteer npm package ────────────────────────────────────────────────
     pp_ok = False
     pp_detail = ""
     if node_ok:
@@ -376,22 +372,22 @@ def cmd_check(args):
         try:
             r = subprocess.run(
                 [node_bin, "-e",
-                 "require('puppeteer-core'); console.log('ok')"],
+                 "require('puppeteer'); console.log('ok')"],
                 capture_output=True, text=True, timeout=5,
                 cwd=node_dir)
             if r.returncode == 0 and "ok" in r.stdout:
                 pp_ok = True
-                pp_detail = "puppeteer-core loaded"
+                pp_detail = "puppeteer loaded (bundled Chromium available)"
             else:
                 pp_detail = (r.stderr or r.stdout).strip()[:80]
         except Exception as e:
             pp_detail = str(e)[:80]
     else:
         pp_detail = "skipped (node missing)"
-    components["puppeteer-core"] = {
+    components["puppeteer"] = {
         "status": "ok" if pp_ok else "missing",
         "detail": pp_detail,
-        "required_for": "selector-based commands (dom_click, dom_type, dom, eval)",
+        "required_for": "all browser commands (includes bundled Chromium)",
     }
     if node_ok and not pp_ok:
         ready = False
@@ -434,7 +430,6 @@ def cmd_check(args):
 
     # ── LocateAnything (for `find` command) ─────────────────────────────────
     la_api_url = os.environ.get("LOCATE_ANYTHING_API_URL", "")
-    la_api_key = os.environ.get("LOCATE_ANYTHING_API_KEY", "")
     la_local_paths = [
         os.environ.get("LOCATE_ANYTHING_PATH", ""),
         os.path.expanduser("~/model-label/LocateAnything-3B-MLX"),
@@ -443,22 +438,57 @@ def cmd_check(args):
     la_local_found = any(p and os.path.isdir(p) for p in la_local_paths)
     mlx_spec = importlib.util.find_spec("mlx_vlm")
 
-    if la_api_url:
-        # API mode configured — verify connectivity
+    # Read JWT fresh (rotates every ~15 min)
+    la_api_key = os.environ.get("LOCATE_ANYTHING_API_KEY", "")
+    if not la_api_key:
+        for cred_path in [
+            os.path.expanduser("~/.pave/membership-credentials.json"),
+            os.path.expanduser("~/.pave/epm-token.json"),
+        ]:
+            try:
+                with open(cred_path) as f:
+                    cred = json.load(f)
+                la_api_key = cred.get("access_token", "")
+                if la_api_key:
+                    break
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+
+    # Prefer local mode if model exists (matches detector.py _detect_mode)
+    if la_local_found and mlx_spec:
+        components["LocateAnything-3B"] = {
+            "status": "ok",
+            "mode": "local",
+            "detail": "model + mlx_vlm ready",
+            "required_for": "find (visual grounding by description)",
+        }
+    elif la_api_url:
+        # API mode — verify by sending a minimal chat completions
+        # request (POST with max_tokens=1). The EPM doesn't expose /models.
         import urllib.request
         import urllib.error
         api_ok = False
         api_detail = ""
-        health_url = la_api_url.replace("/chat/completions", "/models").replace("/v1/", "/v1/")
-        # Try to hit the models endpoint
-        models_url = la_api_url.rsplit("/", 1)[0] + "/models"  # .../v1/chat/completions → .../v1/models
         try:
-            req = urllib.request.Request(models_url)
+            test_payload = json.dumps({
+                "model": os.environ.get("LOCATE_ANYTHING_MODEL", "locate"),
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+            }).encode("utf-8")
+            req = urllib.request.Request(la_api_url, data=test_payload,
+                                        method="POST")
+            req.add_header("Content-Type", "application/json")
             if la_api_key:
                 req.add_header("Authorization", "Bearer " + la_api_key)
-            resp = urllib.request.urlopen(req, timeout=5)
+            resp = urllib.request.urlopen(req, timeout=15)
             api_ok = True
-            api_detail = "connected to %s" % la_api_url[:60]
+            api_detail = "connected, JWT valid"
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                api_ok = True
+                api_detail = "connected (busy, 429 — expected when model is in use)"
+            else:
+                api_detail = "HTTP %d: %s" % (e.code, e.read().decode("utf-8", errors="replace")[:60])
         except Exception as e:
             api_detail = str(e)[:80]
         components["LocateAnything-3B"] = {
@@ -470,28 +500,19 @@ def cmd_check(args):
         if not api_ok:
             hints.append(
                 "LOCATEANYTHING API: Cannot reach %s\n"
-                "  Check your network connection and JWT token.\n"
-                "  The API key is auto-loaded from ~/.pave/membership-credentials.json.\n"
+                "  JWT is read dynamically from ~/.pave/membership-credentials.json.\n"
+                "  Ensure you're logged in: pave login\n"
                 "  To use a local model instead: set LOCATE_ANYTHING_LOCAL=1" % la_api_url[:60])
-    elif la_local_found and mlx_spec:
-        components["LocateAnything-3B"] = {
-            "status": "ok",
-            "mode": "local",
-            "detail": "model + mlx_vlm ready",
-            "required_for": "find (visual grounding by description)",
-        }
     else:
         components["LocateAnything-3B"] = {
             "status": "not_configured",
             "mode": "none",
-            "detail": "Set LOCATE_ANYTHING_API_URL for hosted mode, or install locally",
+            "detail": "Ensure PAVE is logged in (auto-configures API mode)",
             "required_for": "find (visual grounding by description)",
         }
         hints.append(
             "LOCATEANYTHING (for 'find' command): Not configured.\n"
-            "  Option A (hosted, no download): Ensure PAVE is logged in.\n"
-            "    The API URL is derived from PAVE_EPM_URL automatically.\n"
-            "    Set LOCATE_ANYTHING_API_URL in ~/.pave/tokens.yaml to override.\n"
+            "  Option A (hosted, no download): Run 'pave login' — API URL and JWT are auto-configured.\n"
             "  Option B (local model): pip3 install mlx-vlm && huggingface-cli download nvidia/LocateAnything-3B")
 
     # ── Remote mode checks ──────────────────────────────────────────────────

@@ -24,9 +24,10 @@ import json
 import os
 import re
 import sys
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 
-from PIL import Image
+if TYPE_CHECKING:
+    from PIL import Image
 
 # ── Configuration ──���───────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ def _get_env(name, default=None):
 
 
 def _load_jwt():
-    """Load access_token from PAVE membership credentials."""
+    """Load access_token from PAVE membership credentials (read fresh each time)."""
     for path in [
         os.path.expanduser("~/.pave/membership-credentials.json"),
         os.path.expanduser("~/.pave/epm-token.json"),
@@ -74,8 +75,7 @@ MODE = _detect_mode()
 
 # API mode settings
 API_URL = _get_env("LOCATE_ANYTHING_API_URL", "")
-API_KEY = _get_env("LOCATE_ANYTHING_API_KEY", "") or _load_jwt() or ""
-API_MODEL = _get_env("LOCATE_ANYTHING_MODEL", "locate-anything-3b")
+API_MODEL = _get_env("LOCATE_ANYTHING_MODEL", "locate")
 
 # Local mode settings
 _LOCAL_PATHS = [
@@ -130,7 +130,7 @@ def _parse_points(raw: str, w: int, h: int) -> List[Dict]:
 
 # ── Image encoding for API mode ────────────────────────────────────────────
 
-def _encode_image(image: Image.Image) -> str:
+def _encode_image(image: "Image.Image") -> str:
     """Encode PIL Image as base64 data URI."""
     buf = io.BytesIO()
     image.save(buf, format="PNG")
@@ -173,8 +173,10 @@ class Locator:
 
     # ── API mode generation ───────────────────────────────────────────
 
-    def _generate_api(self, image: Image.Image, prompt: str) -> str:
-        """Send image + prompt to API, return raw text response."""
+    def _generate_api(self, image: "Image.Image", prompt: str) -> str:
+        """Send image + prompt to API, return raw text response.
+        Reads JWT fresh on each call (token rotates every ~15 min).
+        """
         import urllib.request
         import urllib.error
 
@@ -183,6 +185,9 @@ class Locator:
                 "LOCATE_ANYTHING_API_URL not configured. "
                 "Set it in ~/.pave/tokens.yaml or environment."
             )
+
+        # Read JWT fresh on each call (PAVE rotates it every ~15 min)
+        api_key = _get_env("LOCATE_ANYTHING_API_KEY") or _load_jwt() or ""
 
         img_b64 = _encode_image(image)
 
@@ -199,8 +204,8 @@ class Locator:
         }
 
         headers = {"Content-Type": "application/json"}
-        if API_KEY:
-            headers["Authorization"] = f"Bearer {API_KEY}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(API_URL, data=data, headers=headers, method="POST")
@@ -226,7 +231,7 @@ class Locator:
 
     # ── Local mode generation ─────────────────────────────────────────
 
-    def _generate_local(self, image: Image.Image, prompt: str,
+    def _generate_local(self, image: "Image.Image", prompt: str,
                         mode: str = "hybrid", max_tokens: int = 512) -> str:
         """Run PBD generation locally via mlx_vlm."""
         from mlx_vlm.prompt_utils import apply_chat_template
@@ -250,7 +255,7 @@ class Locator:
 
     # ── Unified generation ────────────────────────────────────────────
 
-    def _generate(self, image: Image.Image, prompt: str,
+    def _generate(self, image: "Image.Image", prompt: str,
                   mode: str = "hybrid", max_tokens: int = 512) -> str:
         """Route to API or local generation."""
         if self.mode == "api":
@@ -259,7 +264,7 @@ class Locator:
 
     # ── Public API (unchanged interface) ──────────────────────────────
 
-    def find_element(self, image: Image.Image, description: str,
+    def find_element(self, image: "Image.Image", description: str,
                      as_point: bool = True) -> Optional[Dict]:
         """
         Locate a specific UI element by natural-language description.
@@ -287,14 +292,14 @@ class Locator:
 
         return None
 
-    def detect_text(self, image: Image.Image) -> List[Dict]:
+    def detect_text(self, image: "Image.Image") -> List[Dict]:
         """Detect all text regions on screen."""
         prompt = "Detect all the text in box format."
         raw = self._generate(image, prompt, mode="hybrid", max_tokens=2048)
         w, h = image.size
         return _parse_boxes(raw, w, h)
 
-    def scan_interactive(self, image: Image.Image) -> List[Dict]:
+    def scan_interactive(self, image: "Image.Image") -> List[Dict]:
         """Broad scan for interactive elements."""
         prompt = (
             "Locate all the instances that matches the following description: "

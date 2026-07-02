@@ -2,18 +2,30 @@
 /**
  * puppeteer_bridge.js — Node.js daemon for reliable browser control.
  * Protocol: newline-delimited JSON. Send one JSON object per line.
+ *
+ * Connection modes (auto-detected at startup):
+ *   1. ATTACH: If Chrome is running with --remote-debugging-port=9222, attach to it.
+ *   2. LAUNCH: Otherwise, launch bundled Chromium (from `puppeteer` package).
+ *      Uses a persistent profile at ~/.pave/browser-profile so cookies/logins persist.
+ *      Visible (headless: false) by default — user can see and interact with the browser.
+ *      Set env PUPPETEER_HEADLESS=1 for headless mode (servers, CI).
  */
 
-const puppeteer = require("puppeteer-core");
+const puppeteer = require("puppeteer");
 const net = require("net");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const SOCKET_PATH = "/tmp/puppeteer-bridge.sock";
 const CDP_URL = "http://127.0.0.1:9222";
 const OP_TIMEOUT = 20000; // 20s max per operation
+const PROFILE_DIR = path.join(os.homedir(), ".pave", "browser-profile");
+const HEADLESS = process.env.PUPPETEER_HEADLESS === "1" || process.env.PUPPETEER_HEADLESS === "true";
 
 let browser = null;
 let page = null;
+let launchMode = "unknown"; // "attach" or "launch"
 
 // ── Timeout wrapper ───────────────────────────────────────────────────────
 
@@ -30,22 +42,71 @@ function withTimeout(promise, ms, label) {
 
 // ── Connection management ─────────────────────────────────────────────────
 
+async function _probeCDP() {
+  /** Check if Chrome is listening on :9222. */
+  var http = require("http");
+  return new Promise(function(resolve) {
+    var req = http.get(CDP_URL + "/json/version", function(res) {
+      var data = "";
+      res.on("data", function(chunk) { data += chunk; });
+      res.on("end", function() {
+        try { resolve(JSON.parse(data).Browser || "unknown"); }
+        catch (e) { resolve(false); }
+      });
+    });
+    req.on("error", function() { resolve(false); });
+    req.setTimeout(2000, function() { req.destroy(); resolve(false); });
+  });
+}
+
 async function connect() {
-  if (browser && browser.connected) return;
-  console.error("[bridge] Connecting to %s...", CDP_URL);
-  browser = await puppeteer.connect({ browserURL: CDP_URL, defaultViewport: null });
-  var pages = await browser.pages();
-  page = pages[pages.length - 1] || (await browser.newPage());
+  if (browser && (browser.connected || browser.isConnected())) return;
+
+  // Try attaching to existing Chrome first
+  var chromeVersion = await _probeCDP();
+  if (chromeVersion) {
+    console.error("[bridge] Attaching to Chrome %s at %s", chromeVersion, CDP_URL);
+    browser = await puppeteer.connect({ browserURL: CDP_URL, defaultViewport: null });
+    launchMode = "attach";
+    var pages = await browser.pages();
+    page = pages[pages.length - 1] || (await browser.newPage());
+    browser.on("disconnected", function() {
+      console.error("[bridge] Disconnected from browser");
+      browser = null;
+      page = null;
+    });
+    console.error("[bridge] Connected (attach mode). Tab: %s", await page.title());
+    return;
+  }
+
+  // Launch bundled Chromium
+  console.error("[bridge] No Chrome on :9222, launching bundled Chromium (headless: %s)", HEADLESS);
+  if (!fs.existsSync(PROFILE_DIR)) fs.mkdirSync(PROFILE_DIR, { recursive: true });
+  browser = await puppeteer.launch({
+    headless: HEADLESS,
+    userDataDir: PROFILE_DIR,
+    defaultViewport: null,
+    args: [
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--window-size=1280,900",
+    ],
+  });
+  launchMode = "launch";
+  var lp = await browser.pages();
+  page = lp[0] || (await browser.newPage());
   browser.on("disconnected", function() {
-    console.error("[bridge] Disconnected from browser");
+    console.error("[bridge] Browser closed");
     browser = null;
     page = null;
   });
-  console.error("[bridge] Connected. Tab: %s", await page.title());
+  console.error("[bridge] Launched bundled Chromium (launch mode). Profile: %s", PROFILE_DIR);
 }
 
 async function getPage() {
-  if (!browser || !browser.connected) {
+  if (!browser || (!browser.connected && !browser.isConnected())) {
     await connect();
     return page;
   }
@@ -65,10 +126,12 @@ async function getPage() {
 
 const handlers = {
   async ping(cmd) {
-    if (!browser || !browser.connected) return { ok: false, connected: false };
+    if (!browser) return { ok: false, connected: false };
+    var connected = browser.connected || browser.isConnected();
+    if (!connected) return { ok: false, connected: false };
     try {
       await withTimeout(page.evaluate("1"), 2000, "ping");
-      return { ok: true, pong: true, connected: true };
+      return { ok: true, pong: true, connected: true, mode: launchMode };
     } catch (e) {
       return { ok: false, connected: false, error: e.message };
     }
@@ -243,10 +306,21 @@ const handlers = {
   },
 
   async new_tab(cmd) {
-    if (!browser || !browser.connected) await connect();
+    if (!browser) await connect();
     page = await browser.newPage();
     if (cmd.url) await page.goto(cmd.url, { waitUntil: "domcontentloaded", timeout: 15000 });
     return { ok: true, url: page.url() };
+  },
+
+  async focus(cmd) {
+    // In launch mode, bring the browser window to front
+    if (launchMode === "launch" && browser) {
+      var tp = await getPage();
+      await withTimeout(tp.bringToFront(), 3000, "focus");
+      return { ok: true, mode: launchMode };
+    }
+    // In attach mode, we can't control the Chrome window directly
+    return { ok: true, mode: launchMode, note: "attach mode — window focus not controlled" };
   },
 };
 
@@ -267,7 +341,7 @@ async function handleRequest(data) {
 
 async function main() {
   try { await connect(); } catch (err) {
-    console.error("[bridge] Connect failed: %s", err.message);
+    console.error("[bridge] Connect/launch failed: %s", err.message);
     process.exit(1);
   }
 
@@ -293,11 +367,12 @@ async function main() {
   server.listen(SOCKET_PATH);
   fs.chmodSync(SOCKET_PATH, 0o666);
   fs.writeFileSync("/tmp/puppeteer-bridge-ready", "ready\n");
-  console.error("[bridge] Listening on %s", SOCKET_PATH);
+  console.error("[bridge] Listening on %s (mode: %s)", SOCKET_PATH, launchMode);
 
   process.on("SIGINT", function() {
     if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
     if (fs.existsSync("/tmp/puppeteer-bridge-ready")) fs.unlinkSync("/tmp/puppeteer-bridge-ready");
+    if (browser && launchMode === "launch") browser.close();
     process.exit(0);
   });
 }

@@ -10,7 +10,7 @@
     "url": "https://github.com/cnrai/openpave-browser.git"
   },
   "dependencies": {
-    "puppeteer-core": "^24.0.0"
+    "puppeteer": "^24.0.0"
   },
   "engines": {
     "node": ">=16.0.0"

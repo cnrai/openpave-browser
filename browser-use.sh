@@ -41,11 +41,24 @@ if [ -n "$REMOTE_HOST" ]; then
     exit 1
   fi
 
-  SSH_CMD="ssh -o ConnectTimeout=5 -o BatchMode=yes ${REMOTE_USER}@${REMOTE_HOST}"
-  SCP_CMD="scp -o ConnectTimeout=5 -o BatchMode=yes"
+  SSH_OPTS="-o ConnectTimeout=5 -o BatchMode=yes"
+
+  # Forward LOCATE_ANYTHING_* env vars to remote (for API mode)
+  ENV_FWD=""
+  for var in $(env | grep -o '^LOCATE_ANYTHING_[A-Z_]*' | sort -u 2>/dev/null || true); do
+    val=$(printenv "$var" 2>/dev/null || true)
+    if [ -n "$val" ]; then
+      ENV_FWD="${ENV_FWD} ${var}=$(printf '%q' "$val")"
+    fi
+  done
+
+  REMOTE_PREFIX="${REMOTE_PYTHON} ${REMOTE_SCRIPT}"
+  if [ -n "$ENV_FWD" ]; then
+    REMOTE_PREFIX="env${ENV_FWD} ${REMOTE_PREFIX}"
+  fi
 
   # Check connectivity
-  if ! $SSH_CMD "echo ok" >/dev/null 2>&1; then
+  if ! ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "echo ok" >/dev/null 2>&1; then
     echo "ERROR: Cannot reach ${REMOTE_HOST}. Is it online?" >&2
     exit 1
   fi
@@ -53,9 +66,9 @@ if [ -n "$REMOTE_HOST" ]; then
   # Special handling for screenshot: run remote, then copy PNG back
   if [ "${1:-}" = "screenshot" ]; then
     REMOTE_TMP="/tmp/browser-use-screenshot-$(date +%s).png"
-    OUTPUT=$($SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} screenshot --output ${REMOTE_TMP}" 2>/dev/null)
+    OUTPUT=$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "${REMOTE_PREFIX} screenshot --output ${REMOTE_TMP}" 2>/dev/null)
     LOCAL_TMP="/tmp/browser-use-screenshot.png"
-    $SCP_CMD "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_TMP}" "${LOCAL_TMP}" 2>/dev/null
+    scp $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_TMP}" "${LOCAL_TMP}" 2>/dev/null
     echo "$OUTPUT" | sed "s|${REMOTE_TMP}|${LOCAL_TMP}|"
     exit 0
   fi
@@ -75,13 +88,13 @@ if [ -n "$REMOTE_HOST" ]; then
   if [ "$HAS_OCR" = true ]; then
     # Run command, then SCP screenshot back, patch path in JSON
     REMOTE_SCR="/tmp/browser-use-screenshot.png"
-    OUTPUT=$($SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}" 2>/dev/null) || true
+    OUTPUT=$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "${REMOTE_PREFIX} ${QUOTED_ARGS}" 2>/dev/null) || true
     LOCAL_SCR="/tmp/browser-use-screenshot.png"
-    $SCP_CMD "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_SCR}" "${LOCAL_SCR}" 2>/dev/null || true
+    scp $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_SCR}" "${LOCAL_SCR}" 2>/dev/null || true
     echo "$OUTPUT" | sed "s|${REMOTE_SCR}|${LOCAL_SCR}|g"
     exit 0
   else
-    exec $SSH_CMD "${REMOTE_PYTHON} ${REMOTE_SCRIPT} ${QUOTED_ARGS}"
+    exec ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "${REMOTE_PREFIX} ${QUOTED_ARGS}"
   fi
 fi
 
@@ -93,11 +106,11 @@ PYTHON="${BROWSER_USE_PYTHON:-python3}"
 ensure_bridge() {
   if [ ! -S /tmp/puppeteer-bridge.sock ] || [ ! -f /tmp/puppeteer-bridge-ready ]; then
     if [ -f "${SCRIPT_DIR}/node/puppeteer_bridge.js" ]; then
-      # Requires puppeteer-core (install if missing)
-      if ! node -e "require('puppeteer-core')" 2>/dev/null; then
-        if [ ! -d "${SCRIPT_DIR}/node_modules/puppeteer-core" ]; then
-          echo "Installing puppeteer-core..." >&2
-          (cd "${SCRIPT_DIR}" && npm install puppeteer-core 2>/dev/null)
+      # Requires puppeteer (install if missing)
+      if ! node -e "require('puppeteer')" 2>/dev/null; then
+        if [ ! -d "${SCRIPT_DIR}/node_modules/puppeteer" ]; then
+          echo "Installing puppeteer..." >&2
+          (cd "${SCRIPT_DIR}" && npm install puppeteer 2>/dev/null)
         fi
       fi
       echo "Starting Puppeteer bridge..." >&2
@@ -114,7 +127,7 @@ ensure_bridge() {
 
 # Only start bridge for commands that need it
 case "${1:-}" in
-  screenshot|dom|navigate|dom_type|dom_click|key|scroll|eval|url|check)
+  screenshot|dom|navigate|dom_type|dom_click|click|type|find|key|scroll|eval|url|focus|check)
     ensure_bridge
     ;;
 esac
