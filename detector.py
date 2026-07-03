@@ -173,9 +173,9 @@ class Locator:
 
     # ── API mode generation ───────────────────────────────────────────
 
-    def _generate_api(self, image: "Image.Image", prompt: str) -> str:
+def _generate_api(self, image: "Image.Image", prompt: str) -> str:
         """Send image + prompt to API, return raw text response.
-        Reads JWT fresh on each call (token rotates every ~15 min).
+        Reads JWT fresh on each call (PAVE rotates it every ~15 min).
         """
         import urllib.request
         import urllib.error
@@ -186,8 +186,17 @@ class Locator:
                 "Set it in ~/.pave/tokens.yaml or environment."
             )
 
-        # Read JWT fresh on each call (PAVE rotates it every ~15 min)
+        # Read JWT: prefer env var (set by index.js from PAVE credentials),
+        # fall back to reading the credential file directly (local mode).
+        # PAVE manages the token — the skill never refreshes it independently.
         api_key = _get_env("LOCATE_ANYTHING_API_KEY") or _load_jwt() or ""
+
+        if not api_key:
+            raise RuntimeError(
+                "No API key available. PAVE JWT not found in "
+                "LOCATE_ANYTHING_API_KEY env var or ~/.pave/membership-credentials.json. "
+                "Ensure PAVE is authenticated."
+            )
 
         img_b64 = _encode_image(image)
 

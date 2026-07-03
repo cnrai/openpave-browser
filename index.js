@@ -4,8 +4,9 @@
 // that delegates to browser-use.sh.
 //
 // This wrapper also:
-//   1. Loads BROWSER_USE_* env vars from ~/.pave/tokens.yaml
+//   1. Loads BROWSER_USE_* / LOCATE_ANYTHING_* env vars from ~/.pave/tokens.yaml
 //   2. Loads PAVE JWT from ~/.pave/membership-credentials.json → LOCATE_ANYTHING_API_KEY
+//      (read fresh each invocation; PAVE manages token rotation, not the skill)
 //   3. Sets default LOCATE_ANYTHING_API_URL if EPM URL is configured
 
 const { spawnSync } = require("child_process");
@@ -30,9 +31,33 @@ try {
   // Non-fatal
 }
 
+// ── Load PAVE JWT → LOCATE_ANYTHING_API_KEY ─────────────────────────────────
+// PAVE manages the token (rotation, refresh) and writes it to
+// ~/.pave/membership-credentials.json. We read it fresh on every skill
+// invocation (each call is a new node process) and pass it as an env var so
+// it reaches detector.py — even in remote mode (browser-use.sh forwards
+// LOCATE_ANYTHING_* vars over SSH). The browser skill never refreshes the
+// token independently; it just uses whatever PAVE currently provides.
+if (!env.LOCATE_ANYTHING_API_KEY) {
+  for (const credPath of [
+    path.join(process.env.HOME || "", ".pave", "membership-credentials.json"),
+    path.join(process.env.HOME || "", ".pave", "epm-token.json"),
+  ]) {
+    try {
+      if (fs.existsSync(credPath)) {
+        const creds = JSON.parse(fs.readFileSync(credPath, "utf8"));
+        if (creds.access_token) {
+          env.LOCATE_ANYTHING_API_KEY = creds.access_token;
+          break;
+        }
+      }
+    } catch (e) {
+      // Non-fatal — fall through to next file
+    }
+  }
+}
+
 // ── Derive LOCATE_ANYTHING_API_URL from PAVE_EPM_URL ───────────────────────
-// JWT is NOT loaded here — detector.py reads it fresh on each API call
-// (PAVE rotates the token every ~15 min, so caching it would go stale).
 // If user hasn't set the API URL explicitly, derive it from PAVE's EPM URL.
 // Auto-persist to tokens.yaml so future runs don't need PAVE_EPM_URL in env.
 if (!env.LOCATE_ANYTHING_API_URL && process.env.PAVE_EPM_URL) {
