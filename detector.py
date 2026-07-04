@@ -173,7 +173,7 @@ class Locator:
 
     # ── API mode generation ───────────────────────────────────────────
 
-def _generate_api(self, image: "Image.Image", prompt: str) -> str:
+    def _generate_api(self, image: "Image.Image", prompt: str) -> str:
         """Send image + prompt to API, return raw text response.
         Reads JWT fresh on each call (PAVE rotates it every ~15 min).
         """
