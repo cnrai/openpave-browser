@@ -31,6 +31,7 @@ const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createCursor } = require("ghost-cursor");
 
 const SOCKET_PATH = "/tmp/puppeteer-bridge.sock";
 const CDP_URL = "http://127.0.0.1:9222";
@@ -100,6 +101,7 @@ const STEALTH_EVASION = `(function() {
 
 let browser = null;
 let page = null;
+let cursor = null; // ghost-cursor instance for human-like mouse movement
 let launchMode = "unknown"; // "attach" or "launch"
 let _reconnectTimer = null;
 let _reconnectAttempts = 0;
@@ -278,6 +280,8 @@ async function connect() {
         page = null;
         _scheduleReconnect();
       });
+      // Initialize ghost-cursor for human-like mouse movement
+      cursor = createCursor(page);
       console.error("[bridge] Connected (attach mode). Tab: %s", await page.title());
       return;
     } catch(e) {
@@ -343,6 +347,8 @@ async function connect() {
     page = null;
     _scheduleReconnect();
   });
+  // Initialize ghost-cursor for human-like mouse movement
+  cursor = createCursor(page);
   console.error("[bridge] Launched bundled Chromium (launch mode). Profile: %s", PROFILE_DIR);
 }
 
@@ -350,6 +356,10 @@ async function getPage() {
   if (!browser || (!browser.connected && !browser.isConnected())) {
     await connect();
     return page;
+  }
+  // Ensure cursor is initialized
+  if (!cursor && page) {
+    cursor = createCursor(page);
   }
   // Health check: verify the connection is actually alive.
   // Use a longer timeout and retry for heavy SPAs that block the main thread.
@@ -441,19 +451,23 @@ const handlers = {
   async click(cmd) {
     const p = await getPage();
     if (cmd.selector) {
-      // Use evaluate-based click (avoids Puppeteer page.click() hang
-      // on elements with overlays or complex event handling)
-      var ok = await withTimeout(p.evaluate(function(sel) {
+      // Scroll element into view, get its coordinates, then use ghost-cursor
+      var rect = await withTimeout(p.evaluate(function(sel) {
         var el = document.querySelector(sel);
-        if (!el) return false;
+        if (!el) return null;
         el.scrollIntoView({ block: "center" });
-        el.click();
-        return true;
+        var r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
       }, cmd.selector), OP_TIMEOUT, "click:selector");
-      if (!ok) return { ok: false, error: "element not found: " + cmd.selector };
+      if (!rect) return { ok: false, error: "element not found: " + cmd.selector };
+      // Move with human-like bezier curve, then click
+      await withTimeout(cursor.moveTo({ x: rect.x, y: rect.y }), OP_TIMEOUT, "click:move");
+      await withTimeout(cursor.click(), OP_TIMEOUT, "click:fire");
       return { ok: true, selector: cmd.selector };
     } else if (cmd.x !== undefined) {
-      await withTimeout(p.mouse.click(cmd.x, cmd.y), OP_TIMEOUT, "click:coords");
+      // Move with human-like bezier curve to coordinates, then click
+      await withTimeout(cursor.moveTo({ x: cmd.x, y: cmd.y }), OP_TIMEOUT, "click:move");
+      await withTimeout(cursor.click(), OP_TIMEOUT, "click:fire");
       return { ok: true, x: cmd.x, y: cmd.y };
     }
     return { ok: false, error: "need selector or x,y" };
