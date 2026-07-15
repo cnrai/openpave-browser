@@ -9,9 +9,24 @@
  *      Uses a persistent profile at ~/.pave/browser-profile so cookies/logins persist.
  *      Visible (headless: false) by default — user can see and interact with the browser.
  *      Set env PUPPETEER_HEADLESS=1 for headless mode (servers, CI).
+ *
+ * Stealth mode (default: ON):
+ *   Uses puppeteer-extra + puppeteer-extra-plugin-stealth to evade bot detection.
+ *   Masks navigator.webdriver, chrome.runtime, CDP evaluation traces, and more.
+ *   Set env PUPPETEER_STEALTH=0 to disable (e.g. for debugging or trusted sites).
  */
 
-const puppeteer = require("puppeteer");
+const STEALTH = process.env.PUPPETEER_STEALTH !== "0" && process.env.PUPPETEER_STEALTH !== "false";
+
+// Use puppeteer-extra with stealth plugin when enabled, plain puppeteer otherwise
+let puppeteer;
+if (STEALTH) {
+  puppeteer = require("puppeteer-extra");
+  const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+  puppeteer.use(StealthPlugin());
+} else {
+  puppeteer = require("puppeteer");
+}
 const net = require("net");
 const fs = require("fs");
 const os = require("os");
@@ -19,9 +34,69 @@ const path = require("path");
 
 const SOCKET_PATH = "/tmp/puppeteer-bridge.sock";
 const CDP_URL = "http://127.0.0.1:9222";
-const OP_TIMEOUT = 20000; // 20s max per operation
+const OP_TIMEOUT = 30000; // 30s max per operation (allows for heavy SPAs)
 const PROFILE_DIR = path.join(os.homedir(), ".pave", "browser-profile");
 const HEADLESS = process.env.PUPPETEER_HEADLESS === "1" || process.env.PUPPETEER_HEADLESS === "true";
+
+// ── Stealth evasion script ───────────────────────────────────────────────────
+// Injected on every page navigation when stealth mode is active.
+// Masks navigator.webdriver=true, adds chrome.runtime shim, fixes permissions API.
+const STEALTH_EVASION = `(function() {
+  // navigator.webdriver -> false
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
+  } catch(e) {}
+
+  // chrome.runtime shim (missing in CDP-connected browsers)
+  try {
+    if (!window.chrome) window.chrome = {};
+    if (!window.chrome.runtime) {
+      window.chrome.runtime = {
+        PlatformOs: { MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' },
+        PlatformArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64' },
+        connect: function() {},
+        sendMessage: function() {},
+      };
+    }
+  } catch(e) {}
+
+  // Permissions API: Notification.query should return 'denied' not 'prompt'
+  try {
+    const origQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = function(parameters) {
+      if (parameters.name === 'notifications') {
+        return Promise.resolve({ state: Notification.permission, onchange: null });
+      }
+      return origQuery.call(window.navigator.permissions, parameters);
+    };
+  } catch(e) {}
+
+  // Plugins: ensure length matches real Chrome (5 on desktop)
+  try {
+    Object.defineProperty(navigator, 'plugins', {
+      get: function() {
+        var arr = [
+          { name: 'Chrome PDF Viewer' },
+          { name: 'Chromium PDF Viewer' },
+          { name: 'Microsoft Edge PDF Viewer' },
+          { name: 'PDF Viewer' },
+          { name: 'WebKit built-in PDF' },
+        ];
+        arr.item = function(i) { return arr[i] || null; };
+        arr.namedItem = function(n) { return arr.find(function(p) { return p.name === n; }) || null; };
+        arr.refresh = function() {};
+        Object.defineProperty(arr, 'length', { value: 5 });
+        return arr;
+      },
+      configurable: true,
+    });
+  } catch(e) {}
+
+  // Languages: add common secondary locale
+  try {
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
+  } catch(e) {}
+})();`;
 
 let browser = null;
 let page = null;
@@ -53,6 +128,41 @@ function _scheduleReconnect() {
       _scheduleReconnect(); // Try again
     }
   }, delay);
+}
+
+// ── Stealth helpers ──────────────────────────────────────────────────────────
+
+async function _applyStealthToPage(p) {
+  /** Inject evasion script on a page (for attach mode where stealth plugin doesn't auto-apply). */
+  if (!STEALTH) return;
+  try {
+    await p.evaluateOnNewDocument(STEALTH_EVASION);
+    // Also run it immediately on current page
+    await p.evaluate(STEALTH_EVASION).catch(function() {});
+    console.error("[bridge] Stealth evasions applied to page");
+  } catch(e) {
+    console.error("[bridge] Stealth injection warning: %s", e.message);
+  }
+}
+
+async function _applyStealthToAllPages(b) {
+  /** Apply stealth evasions to all existing pages and set up auto-apply on new pages. */
+  if (!STEALTH) return;
+  try {
+    var pages = await b.pages();
+    for (var i = 0; i < pages.length; i++) {
+      await _applyStealthToPage(pages[i]);
+    }
+    // Auto-apply to future pages
+    b.on("targetcreated", async function(target) {
+      try {
+        var newPage = await target.page();
+        if (newPage) await _applyStealthToPage(newPage);
+      } catch(e) {}
+    });
+  } catch(e) {
+    console.error("[bridge] Stealth bulk apply warning: %s", e.message);
+  }
 }
 
 // ── Timeout wrapper ───────────────────────────────────────────────────────
@@ -131,7 +241,11 @@ async function _cleanupStaleChrome() {
     console.error("[bridge] Cleanup: ps scan failed (%s), trying pkill", e.message);
     try {
       var cp2 = require("child_process");
-      cp2.execSync('pkill -f "chromium.*' + PROFILE_DIR.replace(/\//g, '\\/') + '" 2>/dev/null || true', { timeout: 5000 });
+      var profileEscaped = PROFILE_DIR.replace(/\//g, '\\/');
+      // Match all Chrome variants: chromium, Chrome, "Google Chrome for Testing"
+      cp2.execSync('pkill -f "chromium.*' + profileEscaped + '" 2>/dev/null || true', { timeout: 5000 });
+      cp2.execSync('pkill -f "chrome.*' + profileEscaped + '" 2>/dev/null || true', { timeout: 5000 });
+      cp2.execSync('pkill -f "Google Chrome for Testing.*' + profileEscaped + '" 2>/dev/null || true', { timeout: 5000 });
       await new Promise(function(r) { setTimeout(r, 2000); });
     } catch(e2) {}
   }
@@ -154,6 +268,8 @@ async function connect() {
     try {
       browser = await puppeteer.connect({ browserURL: CDP_URL, defaultViewport: null });
       launchMode = "attach";
+      // Apply stealth evasions to all pages (attach mode needs manual injection)
+      await _applyStealthToAllPages(browser);
       var pages = await browser.pages();
       page = pages[pages.length - 1] || (await browser.newPage());
       browser.on("disconnected", function() {
@@ -175,7 +291,7 @@ async function connect() {
   await _cleanupStaleChrome();
 
   // Launch bundled Chromium
-  console.error("[bridge] No Chrome on :9222, launching bundled Chromium (headless: %s)", HEADLESS);
+  console.error("[bridge] No Chrome on :9222, launching bundled Chromium (headless: %s, stealth: %s)", HEADLESS, STEALTH);
   if (!fs.existsSync(PROFILE_DIR)) fs.mkdirSync(PROFILE_DIR, { recursive: true });
 
   // Clear ALL session/tab restore data so Chrome starts with no restored tabs
@@ -209,6 +325,7 @@ async function connect() {
       "--disable-session-crashed-bubble",
       "--hide-crash-restore-bubble",
       "--window-size=1280,900",
+      "--disable-blink-features=AutomationControlled",
     ],
   });
   launchMode = "launch";
@@ -234,10 +351,19 @@ async function getPage() {
     await connect();
     return page;
   }
-  // Health check: verify the connection is actually alive
+  // Health check: verify the connection is actually alive.
+  // Use a longer timeout and retry for heavy SPAs that block the main thread.
   try {
-    await withTimeout(page.evaluate("1"), 3000, "health check");
+    await withTimeout(page.evaluate("1"), 8000, "health check");
   } catch (e) {
+    // The page might be busy loading a heavy JS bundle (e.g. CampBrain 2.5MB).
+    // Check if the browser process is still alive before deciding to reconnect.
+    // If browser is still connected, the page is just busy — return it as-is
+    // and let the caller's operation timeout handle it.
+    if (browser && (browser.connected || browser.isConnected())) {
+      console.error("[bridge] Page busy (health check failed), but browser alive — keeping page: %s", e.message);
+      return page;
+    }
     console.error("[bridge] Connection stale, reconnecting: %s", e.message);
     browser = null;
     page = null;
@@ -254,10 +380,13 @@ const handlers = {
     var connected = browser.connected || browser.isConnected();
     if (!connected) return { ok: false, connected: false };
     try {
-      await withTimeout(page.evaluate("1"), 2000, "ping");
+      await withTimeout(page.evaluate("1"), 10000, "ping");
       return { ok: true, pong: true, connected: true, mode: launchMode };
     } catch (e) {
-      return { ok: false, connected: false, error: e.message };
+      // Bridge is alive and browser is connected, but the page may be busy
+      // (e.g. heavy SPA loading a large JS bundle). Report as alive-but-busy
+      // so the caller doesn't restart us unnecessarily.
+      return { ok: true, connected: false, busy: true, error: e.message };
     }
   },
 
@@ -268,10 +397,18 @@ const handlers = {
 
   async navigate(cmd) {
     const p = await getPage();
+    var navTimeout = cmd.timeout || 15000;
     await withTimeout(
-      p.goto(cmd.url, { waitUntil: "domcontentloaded", timeout: cmd.timeout || 15000 }),
+      p.goto(cmd.url, { waitUntil: "domcontentloaded", timeout: navTimeout }),
       OP_TIMEOUT, "navigate"
     );
+    // For heavy SPAs (e.g. CampBrain/Vue), wait briefly for JS to bootstrap.
+    // This catches the case where domcontentloaded fires on a thin shell
+    // but the app hasn't rendered yet. We don't use networkidle0 because
+    // some sites keep long-poll connections open indefinitely.
+    try {
+      await p.waitForFunction("document.readyState === 'complete'", { timeout: 5000 });
+    } catch(e) {}
     return { ok: true, url: p.url(), title: await p.title() };
   },
 
@@ -460,11 +597,12 @@ const handlers = {
     browser = null;
     page = null;
 
-    // Kill chromium processes using our profile
+    // Kill Chrome processes using our profile (all naming variants)
     try {
       var cp = require("child_process");
       cp.execSync('pkill -9 -f "chromium.*browser-profile" 2>/dev/null || true', { timeout: 5000 });
       cp.execSync('pkill -9 -f "chrome.*browser-profile" 2>/dev/null || true', { timeout: 5000 });
+      cp.execSync('pkill -9 -f "Google Chrome for Testing.*browser-profile" 2>/dev/null || true', { timeout: 5000 });
       await new Promise(function(r) { setTimeout(r, 1000); });
     } catch(e) {}
 

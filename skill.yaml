@@ -2,14 +2,18 @@
 # Vision-driven browser automation via Puppeteer + LocateAnything-3B
 
 name: browser-use
-version: 1.2.6
+version: 1.3.0
 description: >
   Control a web browser through Puppeteer (precise selector-based control)
   + LocateAnything-3B (visual grounding fallback). Bundled Chromium — no
   Chrome installation required. Navigate pages, fill forms, click elements,
   type text, extract DOM, take screenshots, and execute JavaScript — all
   from PAVE agent commands.
-  
+
+  Stealth mode is ON by default — uses puppeteer-extra-plugin-stealth to
+  mask navigator.webdriver, chrome.runtime, CDP traces, and other bot
+  detection signals. Set env PUPPETEER_STEALTH=0 to disable.
+
   OCR is ON by default on all action commands — each response includes the
   extracted page text. Use --no-ocr to disable for faster responses.
 
